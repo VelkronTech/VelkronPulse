@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Velkron Pulse</title>
+    <link rel="stylesheet" href="global.css">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="nav-brand">
+            <span class="nav-logo">◉</span>
+            <span class="nav-title">Velkron Pulse</span>
+        </div>
+        <div class="nav-tabs">
+            <button class="nav-tab active" data-tab="overview">Overview</button>
+            <button class="nav-tab" data-tab="services">Services</button>
+            <button class="nav-tab" data-tab="settings">Settings</button>
+        </div>
+        <div class="nav-status" id="connectionStatus">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">Connecting...</span>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="content">
+        <!-- Overview Tab -->
+        <section id="tab-overview" class="tab-content active">
+            <div class="cards-grid">
+                <!-- CPU Card -->
+                <div class="card">
+                    <div class="card-header">CPU Usage</div>
+                    <div class="card-body">
+                        <div class="gauge-container">
+                            <svg class="gauge" viewBox="0 0 120 120">
+                                <circle class="gauge-bg" cx="60" cy="60" r="50"/>
+                                <circle class="gauge-fill" id="cpuGauge" cx="60" cy="60" r="50"
+                                        stroke-dasharray="314.159" stroke-dashoffset="0"/>
+                                <text class="gauge-text" id="cpuText" x="60" y="60">0%</text>
+                            </svg>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Memory Card -->
+                <div class="card">
+                    <div class="card-header">Memory</div>
+                    <div class="card-body">
+                        <div class="bar-container">
+                            <div class="bar-label">
+                                <span id="memPercent">0%</span>
+                                <span id="memUsed">0 GB</span>
+                            </div>
+                            <div class="bar-track">
+                                <div class="bar-fill" id="memBar" style="width: 0%"></div>
+                            </div>
+                            <div class="bar-detail">
+                                <span>Total: <strong id="memTotal">0 GB</strong></span>
+                                <span>Available: <strong id="memAvail">0 GB</strong></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Uptime Card -->
+                <div class="card">
+                    <div class="card-header">Uptime</div>
+                    <div class="card-body">
+                        <div class="uptime-display">
+                            <span class="uptime-value" id="uptimeValue">0s</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Disk Section -->
+            <div class="section">
+                <h2 class="section-title">Disk Usage</h2>
+                <div id="diskList" class="disk-list"></div>
+            </div>
+
+            <!-- Network Section -->
+            <div class="section">
+                <h2 class="section-title">Network I/O</h2>
+                <div id="netList" class="net-list"></div>
+            </div>
+        </section>
+
+        <!-- Services Tab -->
+        <section id="tab-services" class="tab-content">
+            <div class="section">
+                <h2 class="section-title">Auto-Detected Services</h2>
+                <div class="table-container">
+                    <table class="data-table" id="servicesTable">
+                        <thead>
+                            <tr>
+                                <th>Service</th>
+                                <th>Port</th>
+                                <th>Status</th>
+                                <th>Response Time</th>
+                            </tr>
+                        </thead>
+                        <tbody id="servicesBody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="section">
+                <h2 class="section-title">Custom Endpoints</h2>
+                <div class="table-container">
+                    <table class="data-table" id="customTable">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>URL</th>
+                                <th>Type</th>
+                                <th>Status</th>
+                                <th>Response Time</th>
+                            </tr>
+                        </thead>
+                        <tbody id="customBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- Settings Tab -->
+        <section id="tab-settings" class="tab-content">
+            <div class="section">
+                <h2 class="section-title">Alert Thresholds</h2>
+                <div class="settings-form">
+                    <div class="form-group">
+                        <label for="diskThreshold">Disk Usage Alert (%)</label>
+                        <input type="number" id="diskThreshold" min="1" max="100" value="90">
+                    </div>
+                    <div class="form-group">
+                        <label for="cpuThreshold">CPU Usage Alert (%)</label>
+                        <input type="number" id="cpuThreshold" min="1" max="100" value="90">
+                    </div>
+                    <button class="btn btn-primary" onclick="saveThresholds()">Save Thresholds</button>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2 class="section-title">Add Custom Endpoint</h2>
+                <div class="settings-form">
+                    <div class="form-group">
+                        <label for="epName">Name</label>
+                        <input type="text" id="epName" placeholder="e.g., My API">
+                    </div>
+                    <div class="form-group">
+                        <label for="epUrl">URL / Address</label>
+                        <input type="text" id="epUrl" placeholder="e.g., http://localhost:8080/health or 127.0.0.1:9090">
+                    </div>
+                    <div class="form-group">
+                        <label for="epType">Type</label>
+                        <select id="epType">
+                            <option value="http">HTTP</option>
+                            <option value="tcp">TCP</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-primary" onclick="addEndpoint()">Add Endpoint</button>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2 class="section-title">Export Data</h2>
+                <div class="export-buttons">
+                    <a href="/api/export/json" class="btn btn-secondary" download>Export JSON</a>
+                    <a href="/api/export/csv" class="btn btn-secondary" download>Export CSV</a>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <span>Powered by <a href="https://velkron.com" target="_blank" rel="noopener">Velkron Technologies</a></span>
+    </footer>
+
+    <script src="build.js"></script>
+</body>
+</html>

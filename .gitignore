@@ -1,0 +1,31 @@
+# Binaries
+velkron-pulse.exe
+velkron-pulse
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Build output
+build/velkron-pulse-*
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Velkron Pulse runtime data
+.velkron-pulse/
