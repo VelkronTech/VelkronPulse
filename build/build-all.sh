@@ -9,7 +9,7 @@
 
 set -e
 
-VERSION="1.0.3"
+VERSION="1.1.0"
 LDFLAGS="-s -w -X github.com/velkron/pulse/internal/config.Version=${VERSION}"
 OUTDIR="build"
 

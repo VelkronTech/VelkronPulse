@@ -1,0 +1,6 @@
+{
+  "port": 2024,
+  "bind": "127.0.0.1",
+  "refresh": 2,
+  "no_browser": false
+}

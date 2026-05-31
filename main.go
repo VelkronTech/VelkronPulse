@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"github.com/velkron/pulse/internal/config"
+	"github.com/velkron/pulse/internal/logging"
 	"github.com/velkron/pulse/internal/metrics"
 	"github.com/velkron/pulse/internal/services"
 	"github.com/velkron/pulse/internal/store"
@@ -25,41 +25,50 @@ import (
 )
 
 func main() {
-	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
-
 	// 1. Parse configuration
 	cfg, err := config.Parse()
 	if err != nil {
-		log.Fatalf("Failed to parse config: %v", err)
+		logging.Logger.Error("failed to parse config", "error", err)
+		os.Exit(1)
 	}
 
-	// Handle --version
 	if cfg.ShowVersion {
 		fmt.Printf("Velkron Pulse v%s\n", config.Version)
 		os.Exit(0)
 	}
 
-	log.Println("Velkron Pulse v" + config.Version + " starting...")
-	log.Printf("Configuration: bind=%s port=%d refresh=%ds no-browser=%v",
-		cfg.BindAddress, cfg.Port, cfg.RefreshInterval, cfg.NoBrowser)
-	log.Printf("API token: %s", cfg.Token)
+	logging.Logger.Info("starting",
+		"version", config.Version,
+		"bind", cfg.BindAddress,
+		"port", cfg.Port,
+		"refresh", cfg.RefreshInterval,
+		"no_browser", cfg.NoBrowser,
+		"token", config.MaskToken(cfg.Token),
+	)
 	if cfg.ExposedToNetwork() {
-		log.Println("WARNING: listening on a non-loopback address — ensure firewall rules and a strong --token are in place")
+		logging.Logger.Warn("listening on a non-loopback address — use firewall rules and a strong token")
 	}
 
 	// 2. Initialize SQLite store
 	dataStore, err := store.New(cfg.DBFilePath())
 	if err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
+		logging.Logger.Error("database init failed", "error", err)
+		os.Exit(1)
 	}
 	defer dataStore.Close()
-	log.Println("Database initialized")
+	logging.Logger.Info("database initialized")
 
 	// 3. Start metrics collector
 	collector := metrics.New(time.Duration(cfg.RefreshInterval) * time.Second)
 	collector.Start()
 	defer collector.Stop()
-	log.Println("Metrics collector started (interval:", cfg.RefreshInterval, "s)")
+	logging.Logger.Info("metrics collector started", "interval_sec", cfg.RefreshInterval)
+
+	recorder := func(endpointID int64, status string, responseTime time.Duration) {
+		if err := dataStore.RecordEndpointCheck(endpointID, status, responseTime); err != nil {
+			logging.Logger.Warn("failed to record endpoint check", "endpoint_id", endpointID, "error", err)
+		}
+	}
 
 	// 4. Start service scanner
 	scanner := services.New(60*time.Second, func() ([]services.CustomEndpoint, error) {
@@ -77,21 +86,19 @@ func main() {
 			})
 		}
 		return custom, nil
-	})
+	}, recorder)
 	scanner.Start()
 	defer scanner.Stop()
-	log.Println("Service scanner started")
+	logging.Logger.Info("service scanner started")
 
 	// 5. Start WebSocket hub
 	hub := web.NewHub()
 	go hub.Run()
-	log.Println("WebSocket hub started")
 
 	// 6. Start HTTP server with embedded frontend
 	embeddedFS := embeddedFileSystem()
 	server := web.NewServer(cfg.BindAddress, cfg.Port, cfg.Token, hub, collector, scanner, dataStore, embeddedFS)
 
-	// 7. Auto-open browser (unless --no-browser)
 	if !cfg.NoBrowser {
 		go func() {
 			time.Sleep(1 * time.Second)
@@ -99,7 +106,7 @@ func main() {
 		}()
 	}
 
-	// 8. Start periodic DB save (every 30 seconds) and broadcast loop
+	// 7. Periodic DB save and WebSocket broadcast
 	go func() {
 		saveTicker := time.NewTicker(30 * time.Second)
 		broadcastTicker := time.NewTicker(time.Duration(cfg.RefreshInterval) * time.Second)
@@ -109,7 +116,6 @@ func main() {
 		for {
 			select {
 			case <-saveTicker.C:
-				// Save metrics snapshot to DB
 				snapshot := collector.GetLatest()
 				diskJSON, _ := store.MarshalToJSON(snapshot.Disks)
 				netJSON, _ := store.MarshalToJSON(snapshot.Networks)
@@ -121,27 +127,25 @@ func main() {
 					diskJSON,
 					netJSON,
 				); err != nil {
-					log.Printf("Failed to save metrics: %v", err)
+					logging.Logger.Warn("failed to save metrics", "error", err)
 				}
-
-				// Prune old metrics
 				if err := dataStore.PruneOldMetrics(); err != nil {
-					log.Printf("Failed to prune metrics: %v", err)
+					logging.Logger.Warn("failed to prune metrics", "error", err)
+				}
+				if err := dataStore.PruneOldEndpointChecks(); err != nil {
+					logging.Logger.Warn("failed to prune endpoint checks", "error", err)
 				}
 
 			case <-broadcastTicker.C:
-				// Broadcast current status to all WebSocket clients
 				snapshot := collector.GetLatest()
-				servicesList := scanner.GetServices()
-
+				servicesList := enrichServicesUptime(scanner.GetServices(), dataStore)
 				payload := map[string]interface{}{
 					"metrics":  snapshot,
 					"services": servicesList,
 				}
-
 				data, err := json.Marshal(payload)
 				if err != nil {
-					log.Printf("Failed to marshal broadcast payload: %v", err)
+					logging.Logger.Warn("failed to marshal broadcast payload", "error", err)
 					continue
 				}
 				hub.Broadcast(data)
@@ -149,37 +153,51 @@ func main() {
 		}
 	}()
 
-	// 9. Setup signal handling (must happen before server blocks)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// 10. Start server in background so we can handle signals
 	go func() {
 		if err := server.Start(); err != nil {
-			log.Fatalf("Server error: %v", err)
+			logging.Logger.Error("server error", "error", err)
+			os.Exit(1)
 		}
 	}()
 
-	// 11. Wait for shutdown signal
 	sig := <-sigCh
-	log.Printf("Received signal %v, shutting down gracefully...", sig)
+	logging.Logger.Info("shutting down", "signal", sig.String())
 	signal.Stop(sigCh)
 
-	// Graceful HTTP shutdown with 10s timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
-		log.Printf("HTTP shutdown error: %v", err)
+		logging.Logger.Warn("http shutdown error", "error", err)
 	}
 
-	// Stop background components
 	collector.Stop()
 	scanner.Stop()
 	dataStore.Close()
-	log.Println("Velkron Pulse stopped.")
+	logging.Logger.Info("stopped")
 }
 
-// openBrowser opens the default browser to the given URL.
+func enrichServicesUptime(list []services.ServiceStatus, dataStore *store.Store) []services.ServiceStatus {
+	stats, err := dataStore.GetEndpointUptimeStats()
+	if err != nil || len(stats) == 0 {
+		return list
+	}
+	out := make([]services.ServiceStatus, len(list))
+	copy(out, list)
+	for i := range out {
+		if !out[i].IsCustom || out[i].EndpointID == 0 {
+			continue
+		}
+		if stat, ok := stats[out[i].EndpointID]; ok {
+			out[i].UptimePercent = stat.UptimePercent
+			out[i].ChecksTotal = stat.TotalChecks
+		}
+	}
+	return out
+}
+
 func openBrowser(url string) {
 	var cmd string
 	var args []string
@@ -191,14 +209,14 @@ func openBrowser(url string) {
 	case "darwin":
 		cmd = "open"
 		args = []string{url}
-	default: // linux and others
+	default:
 		cmd = "xdg-open"
 		args = []string{url}
 	}
 
 	if err := exec.Command(cmd, args...).Start(); err != nil {
-		log.Printf("Failed to open browser: %v", err)
+		logging.Logger.Warn("failed to open browser", "error", err)
 	} else {
-		log.Printf("Browser opened to %s", url)
+		logging.Logger.Info("browser opened", "url", url)
 	}
 }

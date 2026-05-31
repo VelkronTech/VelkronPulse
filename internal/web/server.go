@@ -18,6 +18,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/velkron/pulse/internal/config"
 	"github.com/velkron/pulse/internal/metrics"
 	"github.com/velkron/pulse/internal/services"
 	"github.com/velkron/pulse/internal/store"
@@ -84,6 +85,7 @@ func (s *Server) registerRoutes() {
 	api.Use(s.rateLimitMiddleware)
 	api.Use(s.authMiddleware)
 	api.HandleFunc("/status", s.handleStatus).Methods("GET")
+	api.HandleFunc("/info", s.handleInfo).Methods("GET")
 	api.HandleFunc("/endpoints", s.handleListEndpoints).Methods("GET")
 	api.HandleFunc("/endpoints", s.handleAddEndpoint).Methods("POST")
 	api.HandleFunc("/endpoints/{id}", s.handleDeleteEndpoint).Methods("DELETE")
@@ -92,6 +94,7 @@ func (s *Server) registerRoutes() {
 	api.HandleFunc("/metrics/history", s.handleMetricsHistory).Methods("GET")
 	api.HandleFunc("/export/json", s.handleExportJSON).Methods("GET")
 	api.HandleFunc("/export/csv", s.handleExportCSV).Methods("GET")
+	api.HandleFunc("/metrics/prometheus", s.handlePrometheusMetrics).Methods("GET")
 
 	s.router.HandleFunc("/ws", s.hub.HandleWebSocket)
 
@@ -134,7 +137,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tokenJSON, _ := json.Marshal(s.token)
-	injection := fmt.Sprintf("<script>window.__PULSE_TOKEN__=%s;</script>\n", tokenJSON)
+	versionJSON, _ := json.Marshal(config.Version)
+	injection := fmt.Sprintf("<script>window.__PULSE_TOKEN__=%s;window.__PULSE_VERSION__=%s;</script>\n", tokenJSON, versionJSON)
 	body := strings.Replace(string(data), "</head>", injection+"</head>", 1)
 
 	http.SetCookie(w, &http.Cookie{
@@ -161,11 +165,39 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	servicesList := s.enrichServicesWithUptime(s.scanner.GetServices())
 	resp := statusResponse{
 		Metrics:  s.collector.GetLatest(),
-		Services: s.scanner.GetServices(),
+		Services: servicesList,
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"version": config.Version,
+		"bind":    s.bindAddr,
+		"port":    s.port,
+	})
+}
+
+func (s *Server) enrichServicesWithUptime(list []services.ServiceStatus) []services.ServiceStatus {
+	stats, err := s.store.GetEndpointUptimeStats()
+	if err != nil || len(stats) == 0 {
+		return list
+	}
+	out := make([]services.ServiceStatus, len(list))
+	copy(out, list)
+	for i := range out {
+		if !out[i].IsCustom || out[i].EndpointID == 0 {
+			continue
+		}
+		if stat, ok := stats[out[i].EndpointID]; ok {
+			out[i].UptimePercent = stat.UptimePercent
+			out[i].ChecksTotal = stat.TotalChecks
+		}
+	}
+	return out
 }
 
 func (s *Server) handleListEndpoints(w http.ResponseWriter, r *http.Request) {
@@ -341,7 +373,7 @@ func (s *Server) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 	resp := statusResponse{
 		Metrics:  s.collector.GetLatest(),
-		Services: s.scanner.GetServices(),
+		Services: s.enrichServicesWithUptime(s.scanner.GetServices()),
 	}
 
 	data, err := json.MarshalIndent(resp, "", "  ")

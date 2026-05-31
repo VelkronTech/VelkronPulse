@@ -69,6 +69,10 @@ func New(dbPath string) (*Store, error) {
 	}
 
 	s := &Store{db: db}
+	if err := s.enableForeignKeys(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
+	}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to run migrations: %w", err)
@@ -114,7 +118,7 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
-	return nil
+	return s.migrateEndpointChecks()
 }
 
 // Close closes the database connection.

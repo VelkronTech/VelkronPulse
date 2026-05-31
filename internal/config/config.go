@@ -14,7 +14,7 @@ import (
 )
 
 // Version is set at build time via ldflags.
-var Version = "1.0.3"
+var Version = "1.1.0"
 
 // Config holds all runtime configuration for Velkron Pulse.
 type Config struct {
@@ -39,39 +39,51 @@ type Config struct {
 // directory if it does not exist. On headless systems (no DISPLAY on Linux,
 // no TTY), it auto-disables browser opening unless --no-browser is explicitly set.
 func Parse() (*Config, error) {
-	cfg := &Config{}
+	cfg := &Config{
+		Port:            2024,
+		BindAddress:     "127.0.0.1",
+		DBPath:          "~/.velkron-pulse/",
+		RefreshInterval: 2,
+	}
 
-	flag.IntVar(&cfg.Port, "port", 2024, "HTTP server port")
-	flag.StringVar(&cfg.BindAddress, "bind", "127.0.0.1", "Network address to bind (use 0.0.0.0 for all interfaces)")
-	flag.StringVar(&cfg.DBPath, "db-path", "~/.velkron-pulse/", "Database directory path")
-	flag.IntVar(&cfg.RefreshInterval, "refresh", 2, "Metrics collection interval in seconds")
-	flag.BoolVar(&cfg.NoBrowser, "no-browser", false, "Disable auto-opening browser")
+	dbDir, err := expandPath(cfg.DBPath)
+	if err != nil {
+		return nil, err
+	}
+	if fileCfg, err := loadFileConfig(dbDir); err != nil {
+		return nil, err
+	} else {
+		fileCfg.apply(cfg)
+	}
+
+	var tokenFlag string
+	flag.IntVar(&cfg.Port, "port", cfg.Port, "HTTP server port")
+	flag.StringVar(&cfg.BindAddress, "bind", cfg.BindAddress, "Network address to bind (use 0.0.0.0 for all interfaces)")
+	flag.StringVar(&cfg.DBPath, "db-path", cfg.DBPath, "Database directory path")
+	flag.IntVar(&cfg.RefreshInterval, "refresh", cfg.RefreshInterval, "Metrics collection interval in seconds")
+	flag.BoolVar(&cfg.NoBrowser, "no-browser", cfg.NoBrowser, "Disable auto-opening browser")
 	flag.BoolVar(&cfg.ShowVersion, "version", false, "Show version and exit")
-	flag.StringVar(&cfg.Token, "token", "", "API bearer token (auto-generated if empty; also reads VELKRON_PULSE_TOKEN)")
+	flag.StringVar(&tokenFlag, "token", "", "API bearer token (auto-generated if empty; also reads VELKRON_PULSE_TOKEN)")
 	flag.Parse()
+
+	if tokenFlag != "" {
+		cfg.Token = tokenFlag
+	}
+
+	cfg.DBPath, err = expandPath(cfg.DBPath)
+	if err != nil {
+		return nil, err
+	}
 
 	cfg.BindAddress = strings.TrimSpace(cfg.BindAddress)
 	if cfg.BindAddress == "" {
 		cfg.BindAddress = "127.0.0.1"
 	}
 
-	// Auto-detect headless environment: skip browser if no graphical display.
 	if !cfg.NoBrowser && isHeadless() {
 		cfg.NoBrowser = true
 	}
 
-	// Expand ~ to home directory
-	if len(cfg.DBPath) > 0 && cfg.DBPath[0] == '~' {
-		usr, err := user.Current()
-		if err != nil {
-			return nil, fmt.Errorf("cannot determine home directory: %w", err)
-		}
-		cfg.DBPath = filepath.Join(usr.HomeDir, cfg.DBPath[1:])
-	}
-
-	cfg.DBPath = filepath.Clean(cfg.DBPath)
-
-	// Ensure DB directory exists with owner-only permissions.
 	if err := os.MkdirAll(cfg.DBPath, 0700); err != nil {
 		return nil, fmt.Errorf("cannot create database directory %s: %w", cfg.DBPath, err)
 	}
@@ -91,6 +103,17 @@ func Parse() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func expandPath(path string) (string, error) {
+	if len(path) > 0 && path[0] == '~' {
+		usr, err := user.Current()
+		if err != nil {
+			return "", fmt.Errorf("cannot determine home directory: %w", err)
+		}
+		path = filepath.Join(usr.HomeDir, path[1:])
+	}
+	return filepath.Clean(path), nil
 }
 
 func generateToken() (string, error) {

@@ -14,6 +14,7 @@
     };
 
     const API_TOKEN = window.__PULSE_TOKEN__ || '';
+    const APP_VERSION = window.__PULSE_VERSION__ || 'dev';
 
     function apiFetch(url, options) {
         options = options || {};
@@ -55,11 +56,24 @@
         return h + 'h ' + m + 'm';
     }
 
-    function formatResponseTime(ns) {
-        if (!ns || ns === 0) return '-';
-        if (ns < 1000) return ns.toFixed(0) + 'µs';
-        if (ns < 1000000) return (ns / 1000).toFixed(1) + 'ms';
-        return (ns / 1000000).toFixed(2) + 's';
+    function formatResponseTime(raw) {
+        if (raw == null || raw === 0) return '-';
+        var ns = typeof raw === 'number' ? raw : parseInt(raw, 10);
+        if (isNaN(ns) || ns === 0) return '-';
+        if (ns < 1000) return ns + 'ns';
+        if (ns < 1000000) return (ns / 1000).toFixed(1) + 'µs';
+        if (ns < 1000000000) return (ns / 1000000).toFixed(1) + 'ms';
+        return (ns / 1000000000).toFixed(2) + 's';
+    }
+
+    function formatUptimePercent(value, checks) {
+        if (checks == null || checks === 0) return '—';
+        return (value || 0).toFixed(1) + '%';
+    }
+
+    function maskToken(token) {
+        if (!token || token.length <= 8) return '****';
+        return token.slice(0, 4) + '…' + token.slice(-4);
     }
 
     function escapeHtml(str) {
@@ -163,11 +177,7 @@
         if (ws && ws.readyState === WebSocket.OPEN) return;
 
         var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        var wsUrl = protocol + '//' + window.location.host + '/ws';
-        if (API_TOKEN) {
-            wsUrl += '?token=' + encodeURIComponent(API_TOKEN);
-        }
-        ws = new WebSocket(wsUrl);
+        ws = new WebSocket(protocol + '//' + window.location.host + '/ws');
 
         ws.onopen = function () {
             setConnected(true);
@@ -444,7 +454,7 @@
         if (count) count.textContent = services.length + ' endpoint' + (services.length !== 1 ? 's' : '');
 
         if (services.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-muted);padding:20px;text-align:center;">No custom endpoints configured</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" style="color:var(--text-muted);padding:20px;text-align:center;">No custom endpoints configured</td></tr>';
             return;
         }
 
@@ -457,6 +467,7 @@
                 '<td style="font-weight:600;color:var(--text-primary)">' + escapeHtml(s.name) + '</td>' +
                 '<td style="font-family:var(--font-mono);color:var(--accent)">' + escapeHtml(displayUrl) + '</td>' +
                 '<td><span class="badge ' + (isUp ? 'badge-up' : 'badge-down') + '">' + escapeHtml(s.status) + '</span></td>' +
+                '<td>' + formatUptimePercent(s.uptime_percent, s.checks_total) + '</td>' +
                 '<td>' + formatResponseTime(s.response_time) + '</td>' +
                 '<td><button class="btn-delete" onclick="deleteEndpoint(' + endpointId + ')" title="Delete endpoint">' +
                 '<svg viewBox="0 0 24 24" width="14" height="14"><polyline points="3 6 5 6 21 6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>' +
@@ -655,6 +666,7 @@
                     var epUrl = document.getElementById('epUrl');
                     if (epName) epName.value = '';
                     if (epUrl) epUrl.value = '';
+                    fetchInitial();
                 } else {
                     showToast('Failed to add endpoint', 'danger');
                 }
@@ -663,6 +675,128 @@
                 showToast('Failed to add endpoint', 'danger');
             });
     };
+
+    window.copyApiToken = function () {
+        if (!API_TOKEN || !navigator.clipboard) {
+            showToast('Clipboard unavailable', 'danger');
+            return;
+        }
+        navigator.clipboard.writeText(API_TOKEN).then(function () {
+            showToast('API token copied', 'warning');
+        }).catch(function () {
+            showToast('Failed to copy token', 'danger');
+        });
+    };
+
+    window.exportSnapshot = function (format) {
+        var path = format === 'csv' ? '/api/export/csv' : '/api/export/json';
+        apiFetch(path)
+            .then(function (r) {
+                if (!r.ok) throw new Error('export failed');
+                return r.blob();
+            })
+            .then(function (blob) {
+                var url = URL.createObjectURL(blob);
+                var a = document.createElement('a');
+                a.href = url;
+                a.download = 'velkron-pulse-snapshot.' + format;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+            })
+            .catch(function () {
+                showToast('Export failed', 'danger');
+            });
+    };
+
+    function initVersionLabels() {
+        var label = APP_VERSION;
+        ['sidebarVersion', 'footerVersion', 'infoVersion'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (el) el.textContent = label;
+        });
+    }
+
+    function loadSystemInfo() {
+        apiFetch('/api/info')
+            .then(function (r) { return r.json(); })
+            .then(function (info) {
+                var bind = document.getElementById('infoBind');
+                var port = document.getElementById('infoPort');
+                var token = document.getElementById('infoTokenMask');
+                if (bind) bind.textContent = info.bind || '—';
+                if (port) port.textContent = info.port != null ? String(info.port) : '—';
+                if (token) token.textContent = maskToken(API_TOKEN);
+                if (info.version) {
+                    ['sidebarVersion', 'footerVersion', 'infoVersion'].forEach(function (id) {
+                        var el = document.getElementById(id);
+                        if (el) el.textContent = info.version;
+                    });
+                }
+            })
+            .catch(function () {});
+    }
+
+    function drawHistoryChart(rows) {
+        var canvas = document.getElementById('historyCanvas');
+        var count = document.getElementById('historyCount');
+        if (!canvas) return;
+
+        var ctx = canvas.getContext('2d');
+        var width = canvas.width;
+        var height = canvas.height;
+        ctx.clearRect(0, 0, width, height);
+
+        if (!rows || rows.length === 0) {
+            ctx.fillStyle = 'rgba(255,255,255,0.35)';
+            ctx.font = '12px sans-serif';
+            ctx.fillText('Collecting history…', 16, height / 2);
+            if (count) count.textContent = '0 samples';
+            return;
+        }
+
+        if (count) count.textContent = rows.length + ' sample' + (rows.length !== 1 ? 's' : '');
+
+        var pad = 24;
+        var plotW = width - pad * 2;
+        var plotH = height - pad * 2;
+
+        ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+        for (var g = 0; g <= 4; g++) {
+            var y = pad + (plotH / 4) * g;
+            ctx.beginPath();
+            ctx.moveTo(pad, y);
+            ctx.lineTo(width - pad, y);
+            ctx.stroke();
+        }
+
+        function drawSeries(key, color) {
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            rows.forEach(function (row, i) {
+                var x = pad + (plotW * i) / Math.max(rows.length - 1, 1);
+                var y = pad + plotH - (Math.min(row[key] || 0, 100) / 100) * plotH;
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            });
+            ctx.stroke();
+        }
+
+        drawSeries('cpu_percent', '#00f5d4');
+        drawSeries('mem_percent', '#f72585');
+        canvas.dataset.hasHistory = '1';
+    }
+
+    function loadMetricsHistory() {
+        var to = new Date().toISOString();
+        var from = new Date(Date.now() - 3600000).toISOString();
+        apiFetch('/api/metrics/history?from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to))
+            .then(function (r) { return r.json(); })
+            .then(drawHistoryChart)
+            .catch(function () { drawHistoryChart([]); });
+    }
 
     // --- Init ---
     function init() {
@@ -673,9 +807,14 @@
         initParticles();
         initTabs();
         initClock();
+        initVersionLabels();
+        loadSystemInfo();
         fetchInitial();
+        loadMetricsHistory();
         connectWebSocket();
         loadSettings();
+
+        setInterval(loadMetricsHistory, 60000);
 
         // Refresh custom endpoints list
         setInterval(function () {

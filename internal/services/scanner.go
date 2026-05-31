@@ -20,9 +20,14 @@ type ServiceStatus struct {
 	URL          string        `json:"url,omitempty"`
 	Status       string        `json:"status"` // "UP" or "DOWN"
 	ResponseTime time.Duration `json:"response_time"`
-	IsCustom     bool          `json:"is_custom"`
-	EndpointID   int64         `json:"endpoint_id,omitempty"`
+	IsCustom        bool          `json:"is_custom"`
+	EndpointID      int64         `json:"endpoint_id,omitempty"`
+	UptimePercent   float64       `json:"uptime_percent,omitempty"`
+	ChecksTotal     int           `json:"checks_total,omitempty"`
 }
+
+// CheckRecorder persists the outcome of a custom endpoint probe.
+type CheckRecorder func(endpointID int64, status string, responseTime time.Duration)
 
 // CustomEndpoint represents a user-defined endpoint to monitor.
 type CustomEndpoint struct {
@@ -51,16 +56,18 @@ type Scanner struct {
 	services   []ServiceStatus
 	interval   time.Duration
 	stopCh     chan struct{}
-	endpointFn func() ([]CustomEndpoint, error) // callback to fetch custom endpoints from DB
+	endpointFn func() ([]CustomEndpoint, error)
+	recorder   CheckRecorder
 }
 
 // New creates a new Scanner with the given check interval and a function to
 // retrieve custom endpoints from the database.
-func New(interval time.Duration, endpointFn func() ([]CustomEndpoint, error)) *Scanner {
+func New(interval time.Duration, endpointFn func() ([]CustomEndpoint, error), recorder CheckRecorder) *Scanner {
 	return &Scanner{
 		interval:   interval,
 		stopCh:     make(chan struct{}),
 		endpointFn: endpointFn,
+		recorder:   recorder,
 	}
 }
 
@@ -144,6 +151,9 @@ func (s *Scanner) scan() {
 					IsCustom:     true,
 					EndpointID:   ep.ID,
 				})
+				if s.recorder != nil {
+					s.recorder(ep.ID, status.Status, status.ResponseTime)
+				}
 			}
 		}
 	}

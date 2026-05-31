@@ -76,13 +76,42 @@ Example:
 
 Velkron Pulse is a **local monitoring agent**. By default it binds to **loopback only** (`127.0.0.1`) and requires a **bearer token** for all API and WebSocket access.
 
-- On startup, the API token is printed to the console and injected into the dashboard automatically.
+- On startup, a masked API token is logged and injected into the dashboard automatically.
 - Use `--bind 0.0.0.0` only on trusted networks with a strong `--token` and a host firewall.
 - Custom endpoints block cloud metadata addresses and disallow HTTP redirects.
 - Settings writes are restricted to known keys (`disk_threshold`, `cpu_threshold`).
 - For remote access, put a TLS-terminating reverse proxy with authentication in front of Pulse.
 
 API clients must send `Authorization: Bearer <token>` on every request except `GET /api/health`.
+
+### Optional config file
+
+Place `config.json` in your database directory (see `config.example.json`):
+
+```json
+{
+  "port": 2024,
+  "bind": "127.0.0.1",
+  "refresh": 2,
+  "no_browser": false
+}
+```
+
+CLI flags override values from the config file.
+
+### Reverse proxy (TLS)
+
+For LAN access, terminate TLS in front of Pulse and keep Pulse on loopback:
+
+```text
+Client ──HTTPS──▶ Caddy/nginx ──HTTP──▶ 127.0.0.1:2024
+```
+
+Do not expose port 2024 directly without TLS and a strong token.
+
+### Prometheus scrape
+
+Authenticated endpoint: `GET /api/metrics/prometheus` with `Authorization: Bearer <token>`.
 
 ---
 
@@ -140,7 +169,9 @@ chmod +x build/build-all.sh
 | `GET` | `/api/metrics/history?from=&to=` | Bearer | Historical metrics (RFC3339 timestamps) |
 | `GET` | `/api/export/json` | Bearer | Download snapshot as JSON |
 | `GET` | `/api/export/csv` | Bearer | Download snapshot as CSV |
-| `GET` | `/ws?token=` | Bearer | WebSocket for real-time updates |
+| `GET` | `/api/info` | Bearer | Version, bind address, and port |
+| `GET` | `/api/metrics/prometheus` | Bearer | Prometheus text metrics |
+| `GET` | `/ws` | Cookie/Bearer | WebSocket for real-time updates |
 
 ---
 
