@@ -961,6 +961,25 @@ body {
     border-color: var(--text-secondary);
 }
 
+.btn-delete {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: var(--radius-xs);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all var(--transition);
+}
+
+.btn-delete:hover {
+    color: var(--danger);
+    background: var(--danger-bg);
+    border-color: rgba(255, 0, 110, 0.2);
+}
+
 .export-buttons {
     display: flex;
     gap: 12px;

@@ -4,6 +4,8 @@
 package metrics
 
 import (
+	"os"
+	"runtime"
 	"sync"
 	"time"
 
@@ -51,6 +53,9 @@ type MetricsSnapshot struct {
 	Disks     []DiskInfo    `json:"disks"`
 	Networks  []NetworkInfo `json:"networks"`
 	Uptime    uint64        `json:"uptime"`
+	Hostname  string        `json:"hostname"`
+	OS        string        `json:"os"`
+	NumCPU    int           `json:"num_cpu"`
 }
 
 // Collector periodically gathers system metrics and stores the latest snapshot.
@@ -74,7 +79,6 @@ func New(interval time.Duration) *Collector {
 func (c *Collector) Start() {
 	go func() {
 		// Warm up CPU counter (gopsutil needs an interval to calculate percent).
-		// This prevents the first /api/status call from blocking for 1 second.
 		c.cpuCollectOnce()
 		c.collect()
 		ticker := time.NewTicker(c.interval)
@@ -112,6 +116,9 @@ func (c *Collector) GetLatest() MetricsSnapshot {
 func (c *Collector) collect() {
 	snapshot := MetricsSnapshot{
 		Timestamp: time.Now(),
+		Hostname:  hostname(),
+		OS:        runtime.GOOS,
+		NumCPU:    runtime.NumCPU(),
 	}
 
 	// CPU
@@ -171,3 +178,12 @@ func (c *Collector) collect() {
 	c.latest = snapshot
 	c.mu.Unlock()
 }
+
+// hostname returns the system hostname, or "unknown" on error.
+var hostname = sync.OnceValue(func() string {
+	h, err := os.Hostname()
+	if err != nil {
+		return "unknown"
+	}
+	return h
+})

@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -26,7 +27,6 @@ import (
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
-	log.Println("Velkron Pulse starting...")
 
 	// 1. Parse configuration
 	cfg, err := config.Parse()
@@ -34,6 +34,13 @@ func main() {
 		log.Fatalf("Failed to parse config: %v", err)
 	}
 
+	// Handle --version
+	if cfg.ShowVersion {
+		fmt.Printf("Velkron Pulse v%s\n", config.Version)
+		os.Exit(0)
+	}
+
+	log.Println("Velkron Pulse v" + config.Version + " starting...")
 	log.Printf("Configuration: port=%d, db-path=%s, refresh=%ds, no-browser=%v",
 		cfg.Port, cfg.DBPath, cfg.RefreshInterval, cfg.NoBrowser)
 

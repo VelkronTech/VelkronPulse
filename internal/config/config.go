@@ -10,6 +10,9 @@ import (
 	"runtime"
 )
 
+// Version is set at build time via ldflags.
+var Version = "1.0.1"
+
 // Config holds all runtime configuration for Velkron Pulse.
 type Config struct {
 	// Port is the HTTP server port (default: 2024).
@@ -20,6 +23,8 @@ type Config struct {
 	RefreshInterval int
 	// NoBrowser disables auto-opening the browser on startup.
 	NoBrowser bool
+	// ShowVersion prints the version and exits.
+	ShowVersion bool
 }
 
 // Parse reads CLI flags and returns a populated Config.
@@ -33,6 +38,7 @@ func Parse() (*Config, error) {
 	flag.StringVar(&cfg.DBPath, "db-path", "~/.velkron-pulse/", "Database directory path")
 	flag.IntVar(&cfg.RefreshInterval, "refresh", 2, "Metrics collection interval in seconds")
 	flag.BoolVar(&cfg.NoBrowser, "no-browser", false, "Disable auto-opening browser")
+	flag.BoolVar(&cfg.ShowVersion, "version", false, "Show version and exit")
 	flag.Parse()
 
 	// Auto-detect headless environment: skip browser if no graphical display.

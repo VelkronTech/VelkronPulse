@@ -281,6 +281,21 @@
             uptime.textContent = formatDuration(metrics.uptime);
         }
 
+        var sysHost = document.getElementById('sysHost');
+        if (sysHost && metrics.hostname) {
+            sysHost.textContent = metrics.hostname;
+        }
+
+        var sysPlatform = document.getElementById('sysPlatform');
+        if (sysPlatform && metrics.os) {
+            sysPlatform.textContent = metrics.os;
+        }
+
+        var cpuCores = document.getElementById('cpuCores');
+        if (cpuCores && metrics.num_cpu) {
+            cpuCores.textContent = metrics.num_cpu;
+        }
+
         // --- Ticker ---
         var tickerUptime = document.getElementById('tickerUptime');
         if (tickerUptime && metrics.uptime) {
@@ -414,7 +429,7 @@
         if (count) count.textContent = services.length + ' endpoint' + (services.length !== 1 ? 's' : '');
 
         if (services.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" style="color:var(--text-muted);padding:20px;text-align:center;">No custom endpoints configured</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-muted);padding:20px;text-align:center;">No custom endpoints configured</td></tr>';
             return;
         }
 
@@ -422,14 +437,34 @@
             var isUp = s.status === 'UP';
             var displayUrl = s.url || s.port || '-';
             if (!s.url && s.port) displayUrl = 'localhost:' + s.port;
+            var endpointId = s.endpoint_id || s.id || 0;
             return '<tr>' +
                 '<td style="font-weight:600;color:var(--text-primary)">' + escapeHtml(s.name) + '</td>' +
                 '<td style="font-family:var(--font-mono);color:var(--accent)">' + escapeHtml(displayUrl) + '</td>' +
                 '<td><span class="badge ' + (isUp ? 'badge-up' : 'badge-down') + '">' + s.status + '</span></td>' +
                 '<td>' + formatResponseTime(s.response_time) + '</td>' +
+                '<td><button class="btn-delete" onclick="deleteEndpoint(' + endpointId + ')" title="Delete endpoint">' +
+                '<svg viewBox="0 0 24 24" width="14" height="14"><polyline points="3 6 5 6 21 6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>' +
+                '</button></td>' +
                 '</tr>';
         }).join('');
     }
+
+    window.deleteEndpoint = function (id) {
+        if (!id) return;
+        if (!confirm('Delete this endpoint?')) return;
+        fetch('/api/endpoints/' + id, { method: 'DELETE' })
+            .then(function (r) {
+                if (r.ok) {
+                    showToast('Endpoint deleted', 'warning');
+                } else {
+                    showToast('Failed to delete endpoint', 'danger');
+                }
+            })
+            .catch(function () {
+                showToast('Failed to delete endpoint', 'danger');
+            });
+    };
 
     // --- Alerts ---
     function checkAlerts(data) {
