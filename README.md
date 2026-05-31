@@ -58,14 +58,31 @@ Your browser will automatically open to `http://localhost:2024`.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--port` | `2024` | HTTP server port |
+| `--bind` | `127.0.0.1` | Network address to bind (`0.0.0.0` for all interfaces) |
 | `--db-path` | `~/.velkron-pulse/` | Database directory |
 | `--refresh` | `2` | Metrics collection interval (seconds) |
 | `--no-browser` | `false` | Disable auto-opening browser |
+| `--token` | *(auto)* | API bearer token (also `VELKRON_PULSE_TOKEN`) |
+| `--version` | — | Print version and exit |
 
 Example:
 ```bash
-./velkron-pulse --port 8080 --refresh 5 --no-browser
+./velkron-pulse --port 8080 --refresh 5 --no-browser --token "$(openssl rand -hex 32)"
 ```
+
+---
+
+## Security
+
+Velkron Pulse is a **local monitoring agent**. By default it binds to **loopback only** (`127.0.0.1`) and requires a **bearer token** for all API and WebSocket access.
+
+- On startup, the API token is printed to the console and injected into the dashboard automatically.
+- Use `--bind 0.0.0.0` only on trusted networks with a strong `--token` and a host firewall.
+- Custom endpoints block cloud metadata addresses and disallow HTTP redirects.
+- Settings writes are restricted to known keys (`disk_threshold`, `cpu_threshold`).
+- For remote access, put a TLS-terminating reverse proxy with authentication in front of Pulse.
+
+API clients must send `Authorization: Bearer <token>` on every request except `GET /api/health`.
 
 ---
 
@@ -111,18 +128,19 @@ chmod +x build/build-all.sh
 
 ## API Reference
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/status` | Current metrics + services snapshot |
-| `GET` | `/api/endpoints` | List custom endpoints |
-| `POST` | `/api/endpoints` | Add custom endpoint `{name, url, type}` |
-| `DELETE` | `/api/endpoints/{id}` | Remove custom endpoint |
-| `GET` | `/api/settings` | Get all settings |
-| `PUT` | `/api/settings` | Update setting `{key, value}` |
-| `GET` | `/api/metrics/history?from=&to=` | Historical metrics (RFC3339 timestamps) |
-| `GET` | `/api/export/json` | Download snapshot as JSON |
-| `GET` | `/api/export/csv` | Download snapshot as CSV |
-| `GET` | `/ws` | WebSocket endpoint for real-time updates |
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/api/health` | No | Health check |
+| `GET` | `/api/status` | Bearer | Current metrics + services snapshot |
+| `GET` | `/api/endpoints` | Bearer | List custom endpoints |
+| `POST` | `/api/endpoints` | Bearer | Add custom endpoint `{name, url, type}` |
+| `DELETE` | `/api/endpoints/{id}` | Bearer | Remove custom endpoint |
+| `GET` | `/api/settings` | Bearer | Get alert thresholds |
+| `PUT` | `/api/settings` | Bearer | Update setting `{key, value}` |
+| `GET` | `/api/metrics/history?from=&to=` | Bearer | Historical metrics (RFC3339 timestamps) |
+| `GET` | `/api/export/json` | Bearer | Download snapshot as JSON |
+| `GET` | `/api/export/csv` | Bearer | Download snapshot as CSV |
+| `GET` | `/ws?token=` | Bearer | WebSocket for real-time updates |
 
 ---
 

@@ -5,11 +5,23 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"runtime"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
+
+// ErrEndpointNotFound is returned when deleting a non-existent endpoint.
+var ErrEndpointNotFound = errors.New("endpoint not found")
+
+// ErrEndpointLimit is returned when the maximum number of custom endpoints is reached.
+var ErrEndpointLimit = errors.New("endpoint limit reached")
+
+// MaxCustomEndpoints is the maximum number of user-defined endpoints.
+const MaxCustomEndpoints = 50
 
 // CustomEndpoint represents a user-defined endpoint to monitor.
 type CustomEndpoint struct {
@@ -58,7 +70,13 @@ func New(dbPath string) (*Store, error) {
 
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {
+		db.Close()
 		return nil, fmt.Errorf("failed to run migrations: %w", err)
+	}
+
+	if err := restrictDBFilePermissions(dbPath); err != nil {
+		db.Close()
+		return nil, err
 	}
 
 	return s, nil
@@ -108,6 +126,14 @@ func (s *Store) Close() error {
 
 // AddEndpoint inserts a new custom endpoint and returns its ID.
 func (s *Store) AddEndpoint(name, url, endpointType string) (int64, error) {
+	count, err := s.CountEndpoints()
+	if err != nil {
+		return 0, err
+	}
+	if count >= MaxCustomEndpoints {
+		return 0, ErrEndpointLimit
+	}
+
 	result, err := s.db.Exec(
 		"INSERT INTO custom_endpoints (name, url, type) VALUES (?, ?, ?)",
 		name, url, endpointType,
@@ -118,11 +144,28 @@ func (s *Store) AddEndpoint(name, url, endpointType string) (int64, error) {
 	return result.LastInsertId()
 }
 
+// CountEndpoints returns the number of custom endpoints.
+func (s *Store) CountEndpoints() (int, error) {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM custom_endpoints").Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count endpoints: %w", err)
+	}
+	return count, nil
+}
+
 // DeleteEndpoint removes a custom endpoint by ID.
 func (s *Store) DeleteEndpoint(id int64) error {
-	_, err := s.db.Exec("DELETE FROM custom_endpoints WHERE id = ?", id)
+	result, err := s.db.Exec("DELETE FROM custom_endpoints WHERE id = ?", id)
 	if err != nil {
 		return fmt.Errorf("failed to delete endpoint: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check delete result: %w", err)
+	}
+	if n == 0 {
+		return ErrEndpointNotFound
 	}
 	return nil
 }
@@ -253,4 +296,11 @@ func MarshalToJSON(v interface{}) (string, error) {
 		return "[]", err
 	}
 	return string(data), nil
+}
+
+func restrictDBFilePermissions(dbPath string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	return os.Chmod(dbPath, 0600)
 }

@@ -4,6 +4,7 @@
 package services
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -16,6 +17,7 @@ import (
 type ServiceStatus struct {
 	Name         string        `json:"name"`
 	Port         int           `json:"port"`
+	URL          string        `json:"url,omitempty"`
 	Status       string        `json:"status"` // "UP" or "DOWN"
 	ResponseTime time.Duration `json:"response_time"`
 	IsCustom     bool          `json:"is_custom"`
@@ -95,6 +97,11 @@ func (s *Scanner) GetServices() []ServiceStatus {
 	return result
 }
 
+// Rescan immediately re-checks all services and custom endpoints.
+func (s *Scanner) Rescan() {
+	s.scan()
+}
+
 // scan performs a full scan of known services and custom endpoints.
 func (s *Scanner) scan() {
 	var results []ServiceStatus
@@ -118,6 +125,9 @@ func (s *Scanner) scan() {
 		endpoints, err := s.endpointFn()
 		if err == nil {
 			for _, ep := range endpoints {
+				if err := ValidateProbeTarget(ep.Type, ep.URL); err != nil {
+					continue
+				}
 				var status checkResult
 				switch ep.Type {
 				case "tcp":
@@ -128,6 +138,7 @@ func (s *Scanner) scan() {
 				results = append(results, ServiceStatus{
 					Name:         ep.Name,
 					Port:         0,
+					URL:          ep.URL,
 					Status:       status.Status,
 					ResponseTime: status.ResponseTime,
 					IsCustom:     true,
@@ -162,7 +173,12 @@ func checkTCP(addr string) checkResult {
 
 // checkHTTP performs an HTTP GET request to the given URL with a 5-second timeout.
 func checkHTTP(url string) checkResult {
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return errors.New("redirects not allowed")
+		},
+	}
 	start := time.Now()
 	resp, err := client.Get(url)
 	elapsed := time.Since(start)

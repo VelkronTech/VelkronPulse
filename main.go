@@ -2,7 +2,7 @@
 //
 // Usage:
 //
-//	velkron-pulse [--port 2024] [--db-path ~/.velkron-pulse/] [--refresh 2] [--no-browser]
+//	velkron-pulse [--port 2024] [--bind 127.0.0.1] [--db-path ~/.velkron-pulse/] [--refresh 2] [--no-browser] [--token TOKEN] [--version]
 package main
 
 import (
@@ -14,7 +14,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -41,8 +40,12 @@ func main() {
 	}
 
 	log.Println("Velkron Pulse v" + config.Version + " starting...")
-	log.Printf("Configuration: port=%d, db-path=%s, refresh=%ds, no-browser=%v",
-		cfg.Port, cfg.DBPath, cfg.RefreshInterval, cfg.NoBrowser)
+	log.Printf("Configuration: bind=%s port=%d refresh=%ds no-browser=%v",
+		cfg.BindAddress, cfg.Port, cfg.RefreshInterval, cfg.NoBrowser)
+	log.Printf("API token: %s", cfg.Token)
+	if cfg.ExposedToNetwork() {
+		log.Println("WARNING: listening on a non-loopback address — ensure firewall rules and a strong --token are in place")
+	}
 
 	// 2. Initialize SQLite store
 	dataStore, err := store.New(cfg.DBFilePath())
@@ -50,7 +53,7 @@ func main() {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer dataStore.Close()
-	log.Println("Database initialized at", cfg.DBFilePath())
+	log.Println("Database initialized")
 
 	// 3. Start metrics collector
 	collector := metrics.New(time.Duration(cfg.RefreshInterval) * time.Second)
@@ -86,13 +89,13 @@ func main() {
 
 	// 6. Start HTTP server with embedded frontend
 	embeddedFS := embeddedFileSystem()
-	server := web.NewServer(cfg.Port, hub, collector, scanner, dataStore, embeddedFS)
+	server := web.NewServer(cfg.BindAddress, cfg.Port, cfg.Token, hub, collector, scanner, dataStore, embeddedFS)
 
 	// 7. Auto-open browser (unless --no-browser)
 	if !cfg.NoBrowser {
 		go func() {
 			time.Sleep(1 * time.Second)
-			openBrowser("http://localhost:" + strconv.Itoa(cfg.Port))
+			openBrowser(fmt.Sprintf("http://127.0.0.1:%d", cfg.Port))
 		}()
 	}
 

@@ -2,21 +2,26 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // Version is set at build time via ldflags.
-var Version = "1.0.1"
+var Version = "1.0.3"
 
 // Config holds all runtime configuration for Velkron Pulse.
 type Config struct {
 	// Port is the HTTP server port (default: 2024).
 	Port int
+	// BindAddress is the network interface to bind (default: 127.0.0.1).
+	BindAddress string
 	// DBPath is the directory for the SQLite database file (default: ~/.velkron-pulse/).
 	DBPath string
 	// RefreshInterval is the metrics collection interval in seconds (default: 2).
@@ -25,6 +30,8 @@ type Config struct {
 	NoBrowser bool
 	// ShowVersion prints the version and exits.
 	ShowVersion bool
+	// Token is the bearer token required for API and WebSocket access.
+	Token string
 }
 
 // Parse reads CLI flags and returns a populated Config.
@@ -35,14 +42,20 @@ func Parse() (*Config, error) {
 	cfg := &Config{}
 
 	flag.IntVar(&cfg.Port, "port", 2024, "HTTP server port")
+	flag.StringVar(&cfg.BindAddress, "bind", "127.0.0.1", "Network address to bind (use 0.0.0.0 for all interfaces)")
 	flag.StringVar(&cfg.DBPath, "db-path", "~/.velkron-pulse/", "Database directory path")
 	flag.IntVar(&cfg.RefreshInterval, "refresh", 2, "Metrics collection interval in seconds")
 	flag.BoolVar(&cfg.NoBrowser, "no-browser", false, "Disable auto-opening browser")
 	flag.BoolVar(&cfg.ShowVersion, "version", false, "Show version and exit")
+	flag.StringVar(&cfg.Token, "token", "", "API bearer token (auto-generated if empty; also reads VELKRON_PULSE_TOKEN)")
 	flag.Parse()
 
+	cfg.BindAddress = strings.TrimSpace(cfg.BindAddress)
+	if cfg.BindAddress == "" {
+		cfg.BindAddress = "127.0.0.1"
+	}
+
 	// Auto-detect headless environment: skip browser if no graphical display.
-	// User can still force browser with --no-browser=false on headless systems.
 	if !cfg.NoBrowser && isHeadless() {
 		cfg.NoBrowser = true
 	}
@@ -56,25 +69,62 @@ func Parse() (*Config, error) {
 		cfg.DBPath = filepath.Join(usr.HomeDir, cfg.DBPath[1:])
 	}
 
-	// Ensure DB directory exists
-	if err := os.MkdirAll(cfg.DBPath, 0755); err != nil {
+	cfg.DBPath = filepath.Clean(cfg.DBPath)
+
+	// Ensure DB directory exists with owner-only permissions.
+	if err := os.MkdirAll(cfg.DBPath, 0700); err != nil {
 		return nil, fmt.Errorf("cannot create database directory %s: %w", cfg.DBPath, err)
+	}
+	if err := os.Chmod(cfg.DBPath, 0700); err != nil && runtime.GOOS != "windows" {
+		return nil, fmt.Errorf("cannot set database directory permissions: %w", err)
+	}
+
+	if cfg.Token == "" {
+		cfg.Token = strings.TrimSpace(os.Getenv("VELKRON_PULSE_TOKEN"))
+	}
+	if cfg.Token == "" {
+		token, err := generateToken()
+		if err != nil {
+			return nil, fmt.Errorf("cannot generate API token: %w", err)
+		}
+		cfg.Token = token
 	}
 
 	return cfg, nil
 }
 
+func generateToken() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
+
 // isHeadless returns true if the environment appears to have no graphical display.
 func isHeadless() bool {
 	if runtime.GOOS == "windows" {
-		// On Windows, check if running in a console session
 		return os.Getenv("SESSIONNAME") == "" && os.Getenv("TERM") == ""
 	}
-	// Linux/macOS: check DISPLAY environment variable
 	return os.Getenv("DISPLAY") == ""
 }
 
 // DBFilePath returns the full path to the SQLite database file.
 func (c *Config) DBFilePath() string {
 	return filepath.Join(c.DBPath, "config.db")
+}
+
+// ListenAddress returns the host:port string for the HTTP server.
+func (c *Config) ListenAddress() string {
+	return fmt.Sprintf("%s:%d", c.BindAddress, c.Port)
+}
+
+// ExposedToNetwork reports whether the server binds outside loopback.
+func (c *Config) ExposedToNetwork() bool {
+	switch strings.ToLower(c.BindAddress) {
+	case "127.0.0.1", "localhost", "::1":
+		return false
+	default:
+		return true
+	}
 }

@@ -3,40 +3,41 @@
 package web
 
 import (
+	"crypto/subtle"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/gorilla/websocket"
 )
 
-// upgrader upgrades HTTP connections to WebSocket connections.
+const (
+	maxWebSocketClients = 32
+	maxWebSocketMessage = 512
+)
+
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	// Allow all origins since this is a local-only tool.
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
+	CheckOrigin:     checkWebSocketOrigin,
 }
 
-// Client represents a single WebSocket connection.
 type Client struct {
 	hub  *Hub
 	conn *websocket.Conn
 	send chan []byte
 }
 
-// Hub manages all active WebSocket clients and broadcasts messages to them.
 type Hub struct {
-	mu       sync.RWMutex
-	clients  map[*Client]bool
-	broadcast chan []byte
-	register  chan *Client
+	mu         sync.RWMutex
+	clients    map[*Client]bool
+	broadcast  chan []byte
+	register   chan *Client
 	unregister chan *Client
+	token      string
 }
 
-// NewHub creates and returns a new Hub. Call Run() to start processing.
 func NewHub() *Hub {
 	return &Hub{
 		clients:    make(map[*Client]bool),
@@ -46,7 +47,27 @@ func NewHub() *Hub {
 	}
 }
 
-// Run starts the hub's event loop. It should be called as a goroutine.
+func (h *Hub) SetAuth(token string) {
+	h.token = token
+}
+
+func checkWebSocketOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	host := r.Host
+	return origin == "http://"+host || origin == "https://"+host
+}
+
+func (h *Hub) authenticateWebSocket(r *http.Request) bool {
+	token := extractToken(r)
+	if token == "" || h.token == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(token), []byte(h.token)) == 1
+}
+
 func (h *Hub) Run() {
 	for {
 		select {
@@ -66,33 +87,44 @@ func (h *Hub) Run() {
 			log.Printf("[ws] client disconnected (%d total)", len(h.clients))
 
 		case message := <-h.broadcast:
-			h.mu.RLock()
+			h.mu.Lock()
 			for client := range h.clients {
 				select {
 				case client.send <- message:
 				default:
-					// Client's send buffer is full; drop it.
 					close(client.send)
 					delete(h.clients, client)
 				}
 			}
-			h.mu.RUnlock()
+			h.mu.Unlock()
 		}
 	}
 }
 
-// Broadcast sends a message to all connected clients.
 func (h *Hub) Broadcast(data []byte) {
 	h.broadcast <- data
 }
 
-// HandleWebSocket upgrades an HTTP connection to WebSocket and registers the client.
 func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
+	if !h.authenticateWebSocket(r) {
+		writeError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	h.mu.RLock()
+	if len(h.clients) >= maxWebSocketClients {
+		h.mu.RUnlock()
+		writeError(w, http.StatusServiceUnavailable, "Too many WebSocket clients")
+		return
+	}
+	h.mu.RUnlock()
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("[ws] upgrade error: %v", err)
 		return
 	}
+	conn.SetReadLimit(maxWebSocketMessage)
 
 	client := &Client{
 		hub:  h,
@@ -101,13 +133,10 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	h.register <- client
 
-	// Start write pump in a goroutine
 	go client.writePump()
-	// Read pump blocks this handler
 	client.readPump()
 }
 
-// readPump reads messages from the WebSocket connection (mostly for keepalive).
 func (c *Client) readPump() {
 	defer func() {
 		c.hub.unregister <- c
@@ -115,8 +144,7 @@ func (c *Client) readPump() {
 	}()
 
 	for {
-		_, _, err := c.conn.ReadMessage()
-		if err != nil {
+		if _, _, err := c.conn.ReadMessage(); err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
 				log.Printf("[ws] read error: %v", err)
 			}
@@ -125,13 +153,14 @@ func (c *Client) readPump() {
 	}
 }
 
-// writePump writes messages from the hub to the WebSocket connection.
 func (c *Client) writePump() {
 	defer c.conn.Close()
 
 	for message := range c.send {
 		if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
-			log.Printf("[ws] write error: %v", err)
+			if !strings.Contains(err.Error(), "use of closed network connection") {
+				log.Printf("[ws] write error: %v", err)
+			}
 			return
 		}
 	}

@@ -13,6 +13,17 @@
         customRefreshInterval: 10000,
     };
 
+    const API_TOKEN = window.__PULSE_TOKEN__ || '';
+
+    function apiFetch(url, options) {
+        options = options || {};
+        options.headers = Object.assign({}, options.headers || {});
+        if (API_TOKEN) {
+            options.headers.Authorization = 'Bearer ' + API_TOKEN;
+        }
+        return fetch(url, options);
+    }
+
     // --- State ---
     let currentData = null;
     let ws = null;
@@ -152,7 +163,11 @@
         if (ws && ws.readyState === WebSocket.OPEN) return;
 
         var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        ws = new WebSocket(protocol + '//' + window.location.host + '/ws');
+        var wsUrl = protocol + '//' + window.location.host + '/ws';
+        if (API_TOKEN) {
+            wsUrl += '?token=' + encodeURIComponent(API_TOKEN);
+        }
+        ws = new WebSocket(wsUrl);
 
         ws.onopen = function () {
             setConnected(true);
@@ -201,7 +216,7 @@
 
     // --- Initial Fetch ---
     function fetchInitial() {
-        fetch('/api/status')
+        apiFetch('/api/status')
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 currentData = data;
@@ -292,7 +307,7 @@
         }
 
         var cpuCores = document.getElementById('cpuCores');
-        if (cpuCores && metrics.num_cpu) {
+        if (cpuCores && metrics.num_cpu != null) {
             cpuCores.textContent = metrics.num_cpu;
         }
 
@@ -415,7 +430,7 @@
             return '<tr>' +
                 '<td style="font-weight:600;color:var(--text-primary)">' + escapeHtml(s.name) + '</td>' +
                 '<td style="font-family:var(--font-mono);color:var(--accent)">' + (s.port || '-') + '</td>' +
-                '<td><span class="badge ' + (isUp ? 'badge-up' : 'badge-down') + '">' + s.status + '</span></td>' +
+                '<td><span class="badge ' + (isUp ? 'badge-up' : 'badge-down') + '">' + escapeHtml(s.status) + '</span></td>' +
                 '<td>' + formatResponseTime(s.response_time) + '</td>' +
                 '</tr>';
         }).join('');
@@ -441,7 +456,7 @@
             return '<tr>' +
                 '<td style="font-weight:600;color:var(--text-primary)">' + escapeHtml(s.name) + '</td>' +
                 '<td style="font-family:var(--font-mono);color:var(--accent)">' + escapeHtml(displayUrl) + '</td>' +
-                '<td><span class="badge ' + (isUp ? 'badge-up' : 'badge-down') + '">' + s.status + '</span></td>' +
+                '<td><span class="badge ' + (isUp ? 'badge-up' : 'badge-down') + '">' + escapeHtml(s.status) + '</span></td>' +
                 '<td>' + formatResponseTime(s.response_time) + '</td>' +
                 '<td><button class="btn-delete" onclick="deleteEndpoint(' + endpointId + ')" title="Delete endpoint">' +
                 '<svg viewBox="0 0 24 24" width="14" height="14"><polyline points="3 6 5 6 21 6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>' +
@@ -453,10 +468,16 @@
     window.deleteEndpoint = function (id) {
         if (!id) return;
         if (!confirm('Delete this endpoint?')) return;
-        fetch('/api/endpoints/' + id, { method: 'DELETE' })
+        apiFetch('/api/endpoints/' + id, { method: 'DELETE' })
             .then(function (r) {
                 if (r.ok) {
                     showToast('Endpoint deleted', 'warning');
+                    if (currentData && currentData.services) {
+                        currentData.services = currentData.services.filter(function (s) {
+                            return !(s.is_custom && (s.endpoint_id === id || s.id === id));
+                        });
+                        renderServices(currentData.services);
+                    }
                 } else {
                     showToast('Failed to delete endpoint', 'danger');
                 }
@@ -564,7 +585,7 @@
 
     // --- Settings ---
     function loadSettings() {
-        fetch('/api/settings')
+        apiFetch('/api/settings')
             .then(function (r) { return r.json(); })
             .then(function (settings) {
                 if (settings.disk_threshold) {
@@ -592,12 +613,12 @@
         localStorage.setItem('diskThreshold', diskThreshold);
         localStorage.setItem('cpuThreshold', cpuThreshold);
 
-        fetch('/api/settings', {
+        apiFetch('/api/settings', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ key: 'disk_threshold', value: String(diskThreshold) })
         }).catch(function () {});
-        fetch('/api/settings', {
+        apiFetch('/api/settings', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ key: 'cpu_threshold', value: String(cpuThreshold) })
@@ -622,7 +643,7 @@
             return;
         }
 
-        fetch('/api/endpoints', {
+        apiFetch('/api/endpoints', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name: name.trim(), url: url.trim(), type: endpointType })
@@ -658,7 +679,7 @@
 
         // Refresh custom endpoints list
         setInterval(function () {
-            fetch('/api/endpoints')
+            apiFetch('/api/endpoints')
                 .then(function (r) { return r.json(); })
                 .then(function (endpoints) {
                     if (currentData && currentData.services) {
@@ -667,8 +688,12 @@
                             var match = currentData.services.find(function (s) {
                                 return s.is_custom && s.endpoint_id === ep.id;
                             });
-                            return match || {
+                            if (match) {
+                                return Object.assign({}, match, { url: ep.url });
+                            }
+                            return {
                                 name: ep.name,
+                                url: ep.url,
                                 port: 0,
                                 status: 'UNKNOWN',
                                 response_time: 0,

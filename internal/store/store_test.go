@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"os"
 	"testing"
 )
@@ -81,6 +82,34 @@ func TestDeleteEndpoint(t *testing.T) {
 	}
 	if len(endpoints) != 0 {
 		t.Errorf("expected 0 endpoints after delete, got %d", len(endpoints))
+	}
+}
+
+func TestEndpointLimit(t *testing.T) {
+	s := newTestStore(t)
+
+	for i := 0; i < MaxCustomEndpoints; i++ {
+		_, err := s.AddEndpoint("svc", "127.0.0.1:9000", "tcp")
+		if err != nil {
+			t.Fatalf("AddEndpoint failed at %d: %v", i, err)
+		}
+	}
+
+	_, err := s.AddEndpoint("overflow", "127.0.0.1:9001", "tcp")
+	if !errors.Is(err, ErrEndpointLimit) {
+		t.Fatalf("expected ErrEndpointLimit, got %v", err)
+	}
+}
+
+func TestDeleteEndpointNotFound(t *testing.T) {
+	s := newTestStore(t)
+
+	err := s.DeleteEndpoint(99999)
+	if err == nil {
+		t.Fatal("expected error for non-existent endpoint")
+	}
+	if !errors.Is(err, ErrEndpointNotFound) {
+		t.Errorf("expected ErrEndpointNotFound, got %v", err)
 	}
 }
 

@@ -65,6 +65,45 @@ func TestDBFilePath(t *testing.T) {
 	}
 }
 
+func TestParseBindDefault(t *testing.T) {
+	resetFlagsForTesting()
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+	os.Args = []string{"velkron-pulse"}
+
+	cfg, err := Parse()
+	if err != nil {
+		t.Fatalf("Parse() error: %v", err)
+	}
+	if cfg.BindAddress != "127.0.0.1" {
+		t.Errorf("expected BindAddress=127.0.0.1, got %q", cfg.BindAddress)
+	}
+	if cfg.Token == "" {
+		t.Error("expected auto-generated token")
+	}
+}
+
+func TestParseVersionFlag(t *testing.T) {
+	resetFlagsForTesting()
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+	os.Args = []string{"velkron-pulse", "--version"}
+
+	cfg, err := Parse()
+	if err != nil {
+		t.Fatalf("Parse() error: %v", err)
+	}
+	if !cfg.ShowVersion {
+		t.Error("expected ShowVersion=true")
+	}
+}
+
+func TestVersionDefault(t *testing.T) {
+	if Version == "" {
+		t.Error("expected non-empty default Version")
+	}
+}
+
 func TestIsHeadless(t *testing.T) {
 	// Headless detection is environment-dependent, just ensure it returns a bool.
 	result := isHeadless()
