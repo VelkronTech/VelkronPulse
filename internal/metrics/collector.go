@@ -73,6 +73,9 @@ func New(interval time.Duration) *Collector {
 // It collects immediately on start, then every interval.
 func (c *Collector) Start() {
 	go func() {
+		// Warm up CPU counter (gopsutil needs an interval to calculate percent).
+		// This prevents the first /api/status call from blocking for 1 second.
+		c.cpuCollectOnce()
 		c.collect()
 		ticker := time.NewTicker(c.interval)
 		defer ticker.Stop()
@@ -86,6 +89,11 @@ func (c *Collector) Start() {
 			}
 		}
 	}()
+}
+
+// cpuCollectOnce primes the CPU counter so subsequent calls don't block.
+func (c *Collector) cpuCollectOnce() {
+	cpu.Percent(0, false)
 }
 
 // Stop signals the collector goroutine to stop.

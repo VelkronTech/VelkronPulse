@@ -246,18 +246,9 @@ func (s *Store) PruneOldMetrics() error {
 	return nil
 }
 
-// MarshalDisks serializes disk info slice to JSON string.
-func MarshalDisks(disks []map[string]interface{}) (string, error) {
-	data, err := json.Marshal(disks)
-	if err != nil {
-		return "[]", err
-	}
-	return string(data), nil
-}
-
-// MarshalNetworks serializes network info slice to JSON string.
-func MarshalNetworks(networks []map[string]interface{}) (string, error) {
-	data, err := json.Marshal(networks)
+// MarshalToJSON serializes any value to a JSON string.
+func MarshalToJSON(v interface{}) (string, error) {
+	data, err := json.Marshal(v)
 	if err != nil {
 		return "[]", err
 	}

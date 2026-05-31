@@ -3,6 +3,7 @@
 package web
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -22,13 +23,13 @@ import (
 
 // Server wraps the HTTP server, router, and references to other components.
 type Server struct {
-	router   *mux.Router
-	server   *http.Server
-	hub      *Hub
+	router    *mux.Router
+	server    *http.Server
+	hub       *Hub
 	collector *metrics.Collector
-	scanner  *services.Scanner
-	store    *store.Store
-	port     int
+	scanner   *services.Scanner
+	store     *store.Store
+	port      int
 }
 
 // NewServer creates a new Server with all routes registered.
@@ -66,6 +67,7 @@ func (s *Server) registerRoutes(embeddedFS fs.FS) {
 	api.HandleFunc("/metrics/history", s.handleMetricsHistory).Methods("GET")
 	api.HandleFunc("/export/json", s.handleExportJSON).Methods("GET")
 	api.HandleFunc("/export/csv", s.handleExportCSV).Methods("GET")
+	api.HandleFunc("/health", s.handleHealth).Methods("GET")
 
 	// WebSocket
 	s.router.HandleFunc("/ws", s.hub.HandleWebSocket)
@@ -86,12 +88,25 @@ func (s *Server) Start() error {
 	return s.server.ListenAndServe()
 }
 
+// Shutdown gracefully shuts down the HTTP server.
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s.server == nil {
+		return nil
+	}
+	return s.server.Shutdown(ctx)
+}
+
 // --- API Handlers ---
 
 // statusResponse is the JSON structure returned by /api/status.
 type statusResponse struct {
-	Metrics  metrics.MetricsSnapshot   `json:"metrics"`
-	Services []services.ServiceStatus  `json:"services"`
+	Metrics  metrics.MetricsSnapshot  `json:"metrics"`
+	Services []services.ServiceStatus `json:"services"`
+}
+
+// handleHealth returns a simple health check response.
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // handleStatus returns the current metrics and services snapshot.

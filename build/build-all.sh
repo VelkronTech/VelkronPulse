@@ -9,7 +9,7 @@
 
 set -e
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 LDFLAGS="-s -w -X main.version=${VERSION}"
 OUTDIR="build"
 

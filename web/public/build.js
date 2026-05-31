@@ -1,8 +1,17 @@
-// Velkron Pulse — Frontend Application
-// Connects to the WebSocket for real-time updates and renders the dashboard.
+// ============================================
+// VELKRON PULSE — Frontend Application
+// Futuristic real-time system monitoring dashboard
+// ============================================
 
 (function () {
     'use strict';
+
+    // --- Configuration ---
+    const CONFIG = {
+        wsReconnectDelay: 3000,
+        tickerInterval: 1000,
+        customRefreshInterval: 10000,
+    };
 
     // --- State ---
     let currentData = null;
@@ -10,21 +19,24 @@
     let reconnectTimer = null;
     let diskThreshold = parseInt(localStorage.getItem('diskThreshold') || '90', 10);
     let cpuThreshold = parseInt(localStorage.getItem('cpuThreshold') || '90', 10);
+    let endpointType = 'http';
+    let alertTimers = {};
+    let lastAlertTimes = {};
 
-    // --- DOM References ---
+    // --- DOM Cache ---
     const $ = (id) => document.getElementById(id);
-    const statusDot = $('statusDot');
-    const statusText = $('statusText');
+    const $$ = (sel) => document.querySelectorAll(sel);
 
     // --- Utilities ---
     function formatBytes(bytes) {
-        if (bytes === 0) return '0 B';
+        if (!bytes || bytes === 0) return '0 B';
         const units = ['B', 'KB', 'MB', 'GB', 'TB'];
         const i = Math.floor(Math.log(bytes) / Math.log(1024));
         return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + units[i];
     }
 
     function formatDuration(seconds) {
+        if (!seconds) return '0s';
         if (seconds < 60) return seconds + 's';
         if (seconds < 3600) return Math.floor(seconds / 60) + 'm ' + (seconds % 60) + 's';
         const h = Math.floor(seconds / 3600);
@@ -32,32 +44,115 @@
         return h + 'h ' + m + 'm';
     }
 
-    function formatResponseTime(d) {
-        if (d === 0) return '-';
-        if (d < 1000) return d + 'µs';
-        if (d < 1000000) return (d / 1000).toFixed(1) + 'ms';
-        return (d / 1000000).toFixed(2) + 's';
+    function formatResponseTime(ns) {
+        if (!ns || ns === 0) return '-';
+        if (ns < 1000) return ns.toFixed(0) + 'µs';
+        if (ns < 1000000) return (ns / 1000).toFixed(1) + 'ms';
+        return (ns / 1000000).toFixed(2) + 's';
     }
 
-    // --- Connection Status ---
-    function setConnected(connected) {
-        if (connected) {
-            statusDot.className = 'status-dot connected';
-            statusText.textContent = 'Connected';
-        } else {
-            statusDot.className = 'status-dot';
-            statusText.textContent = 'Disconnected';
+    function escapeHtml(str) {
+        if (!str) return '';
+        var div = document.createElement('div');
+        div.appendChild(document.createTextNode(String(str)));
+        return div.innerHTML;
+    }
+
+    // --- Particle Canvas ---
+    function initParticles() {
+        var canvas = document.getElementById('particleCanvas');
+        if (!canvas) return;
+        var ctx = canvas.getContext('2d');
+        var particles = [];
+        var mouse = { x: 0, y: 0 };
+        var animId;
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
         }
+
+        window.addEventListener('resize', resize);
+        resize();
+
+        document.addEventListener('mousemove', function (e) {
+            mouse.x = e.clientX;
+            mouse.y = e.clientY;
+        });
+
+        for (var i = 0; i < 80; i++) {
+            particles.push({
+                x: Math.random() * canvas.width,
+                y: Math.random() * canvas.height,
+                vx: (Math.random() - 0.5) * 0.5,
+                vy: (Math.random() - 0.5) * 0.5,
+                size: Math.random() * 2 + 0.5,
+                alpha: Math.random() * 0.5 + 0.1,
+            });
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            for (var i = 0; i < particles.length; i++) {
+                var p = particles[i];
+                p.x += p.vx;
+                p.y += p.vy;
+
+                if (p.x < 0) p.x = canvas.width;
+                if (p.x > canvas.width) p.x = 0;
+                if (p.y < 0) p.y = canvas.height;
+                if (p.y > canvas.height) p.y = 0;
+
+                // Mouse interaction
+                var dx = mouse.x - p.x;
+                var dy = mouse.y - p.y;
+                var dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < 150) {
+                    p.vx += dx * 0.00005;
+                    p.vy += dy * 0.00005;
+                    // Cap velocity
+                    var speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+                    if (speed > 1) {
+                        p.vx = (p.vx / speed) * 1;
+                        p.vy = (p.vy / speed) * 1;
+                    }
+                }
+
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(0, 245, 212, ' + p.alpha + ')';
+                ctx.fill();
+
+                // Connections
+                for (var j = i + 1; j < particles.length; j++) {
+                    var p2 = particles[j];
+                    var dx2 = p.x - p2.x;
+                    var dy2 = p.y - p2.y;
+                    var dist2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+                    if (dist2 < 120) {
+                        ctx.beginPath();
+                        ctx.moveTo(p.x, p.y);
+                        ctx.lineTo(p2.x, p2.y);
+                        ctx.strokeStyle = 'rgba(0, 245, 212, ' + (0.08 * (1 - dist2 / 120)) + ')';
+                        ctx.lineWidth = 0.5;
+                        ctx.stroke();
+                    }
+                }
+            }
+
+            animId = requestAnimationFrame(draw);
+        }
+
+        draw();
     }
 
     // --- WebSocket ---
     function connectWebSocket() {
         if (ws && ws.readyState === WebSocket.OPEN) return;
 
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = protocol + '//' + window.location.host + '/ws';
-
-        ws = new WebSocket(wsUrl);
+        var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        ws = new WebSocket(protocol + '//' + window.location.host + '/ws');
 
         ws.onopen = function () {
             setConnected(true);
@@ -69,11 +164,11 @@
 
         ws.onmessage = function (event) {
             try {
-                const data = JSON.parse(event.data);
+                var data = JSON.parse(event.data);
                 currentData = data;
                 renderDashboard(data);
             } catch (e) {
-                console.error('Failed to parse WebSocket message:', e);
+                console.error('WS parse error:', e);
             }
         };
 
@@ -82,9 +177,7 @@
             scheduleReconnect();
         };
 
-        ws.onerror = function () {
-            // onclose will fire after this
-        };
+        ws.onerror = function () { /* onclose will fire */ };
     }
 
     function scheduleReconnect() {
@@ -92,10 +185,21 @@
         reconnectTimer = setTimeout(function () {
             reconnectTimer = null;
             connectWebSocket();
-        }, 3000);
+        }, CONFIG.wsReconnectDelay);
     }
 
-    // --- Initial Fetch (fallback if WS not yet connected) ---
+    function setConnected(connected) {
+        var dot = document.getElementById('statusDot');
+        var text = document.getElementById('statusText');
+        if (dot) {
+            dot.className = 'pulse-dot' + (connected ? ' connected' : '');
+        }
+        if (text) {
+            text.textContent = connected ? 'LIVE' : 'OFFLINE';
+        }
+    }
+
+    // --- Initial Fetch ---
     function fetchInitial() {
         fetch('/api/status')
             .then(function (r) { return r.json(); })
@@ -108,7 +212,7 @@
             });
     }
 
-    // --- Rendering ---
+    // --- Dashboard Rendering ---
     function renderDashboard(data) {
         if (!data) return;
         renderMetrics(data.metrics);
@@ -119,59 +223,105 @@
     function renderMetrics(metrics) {
         if (!metrics) return;
 
-        // CPU Gauge
-        const cpuPct = metrics.cpu ? metrics.cpu.percent : 0;
-        const circumference = 314.159;
-        const offset = circumference - (cpuPct / 100) * circumference;
-        const cpuGauge = $('cpuGauge');
-        if (cpuGauge) {
-            cpuGauge.style.strokeDashoffset = offset;
-            cpuGauge.style.stroke = cpuPct > cpuThreshold ? 'var(--danger)' : cpuPct > 70 ? 'var(--warning)' : 'var(--accent)';
-        }
-        const cpuText = $('cpuText');
-        if (cpuText) cpuText.textContent = cpuPct.toFixed(1) + '%';
+        var cpuPct = metrics.cpu ? metrics.cpu.percent : 0;
+        var mem = metrics.memory || {};
+        var memPct = mem.percent || 0;
 
-        // Memory
-        const mem = metrics.memory;
-        if (mem) {
-            const memPct = mem.percent || 0;
-            const memBar = $('memBar');
-            if (memBar) memBar.style.width = memPct.toFixed(1) + '%';
-            const memPercent = $('memPercent');
-            if (memPercent) memPercent.textContent = memPct.toFixed(1) + '%';
-            const memUsed = $('memUsed');
-            if (memUsed) memUsed.textContent = formatBytes(mem.used);
-            const memTotal = $('memTotal');
-            if (memTotal) memTotal.textContent = formatBytes(mem.total);
-            const memAvail = $('memAvail');
-            if (memAvail) memAvail.textContent = formatBytes(mem.available);
+        // --- CPU Gauge ---
+        var circumference = 534.07;
+        var cpuOffset = circumference - (cpuPct / 100) * circumference;
+        var cpuRing = document.getElementById('cpuRing');
+        if (cpuRing) {
+            cpuRing.style.strokeDashoffset = cpuOffset;
+
+            var gradient;
+            if (cpuPct > cpuThreshold) {
+                gradient = 'url(#cpuGradientDanger)';
+                setBadge('cpuBadge', 'CRITICAL', 'danger');
+            } else if (cpuPct > 70) {
+                gradient = 'url(#cpuGradientWarn)';
+                setBadge('cpuBadge', 'HIGH', 'warning');
+            } else {
+                gradient = 'url(#cpuGradient)';
+                setBadge('cpuBadge', 'NORMAL', '');
+            }
+            cpuRing.setAttribute('stroke', gradient);
         }
 
-        // Uptime
-        const uptime = $('uptimeValue');
+        var cpuValue = document.getElementById('cpuValue');
+        if (cpuValue) cpuValue.textContent = cpuPct.toFixed(1);
+
+        // --- Memory Gauge ---
+        var memOffset = circumference - (memPct / 100) * circumference;
+        var memRing = document.getElementById('memRing');
+        if (memRing) {
+            memRing.style.strokeDashoffset = memOffset;
+        }
+
+        var memValue = document.getElementById('memValue');
+        if (memValue) memValue.textContent = memPct.toFixed(1);
+
+        var memUsed = document.getElementById('memUsed');
+        if (memUsed) memUsed.textContent = formatBytes(mem.used);
+
+        var memTotal = document.getElementById('memTotal');
+        if (memTotal) memTotal.textContent = formatBytes(mem.total);
+
+        if (memPct > 90) {
+            setBadge('memBadge', 'CRITICAL', 'danger');
+        } else if (memPct > 75) {
+            setBadge('memBadge', 'HIGH', 'warning');
+        } else {
+            setBadge('memBadge', 'NORMAL', '');
+        }
+
+        // --- System Info ---
+        var uptime = document.getElementById('sysUptime');
         if (uptime && metrics.uptime) {
             uptime.textContent = formatDuration(metrics.uptime);
         }
 
-        // Disks
+        // --- Ticker ---
+        var tickerUptime = document.getElementById('tickerUptime');
+        if (tickerUptime && metrics.uptime) {
+            tickerUptime.textContent = formatDuration(metrics.uptime);
+        }
+        var tickerCpu = document.getElementById('tickerCpu');
+        if (tickerCpu) tickerCpu.textContent = cpuPct.toFixed(1) + '%';
+        var tickerMem = document.getElementById('tickerMem');
+        if (tickerMem) tickerMem.textContent = memPct.toFixed(1) + '%';
+
+        // --- Disks ---
         renderDisks(metrics.disks);
 
-        // Networks
+        // --- Networks ---
         renderNetworks(metrics.networks);
     }
 
+    function setBadge(id, text, type) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = text;
+        el.className = 'gauge-badge';
+        if (type) el.classList.add(type);
+    }
+
     function renderDisks(disks) {
-        const container = $('diskList');
+        var container = document.getElementById('diskList');
+        var count = document.getElementById('diskCount');
         if (!container) return;
 
         if (!disks || disks.length === 0) {
-            container.innerHTML = '<div class="disk-item"><span class="text-muted">No disk data</span></div>';
+            container.innerHTML = '<div class="disk-item" style="color:var(--text-muted);font-size:11px;">No disk data</div>';
+            if (count) count.textContent = '0 volumes';
             return;
         }
 
+        if (count) count.textContent = disks.length + ' volume' + (disks.length !== 1 ? 's' : '');
+
         container.innerHTML = disks.map(function (d) {
-            const pct = d.percent || 0;
-            let cls = 'normal';
+            var pct = d.percent || 0;
+            var cls = 'normal';
             if (pct > 90) cls = 'danger';
             else if (pct > 75) cls = 'warning';
 
@@ -180,7 +330,7 @@
                 '<span class="disk-name">' + escapeHtml(d.mount_point) + '</span>' +
                 '<span class="disk-percent ' + cls + '">' + pct.toFixed(1) + '%</span>' +
                 '</div>' +
-                '<div class="disk-bar">' +
+                '<div class="disk-bar-track">' +
                 '<div class="disk-bar-fill ' + cls + '" style="width:' + pct.toFixed(1) + '%"></div>' +
                 '</div>' +
                 '<div class="disk-details">' +
@@ -193,13 +343,17 @@
     }
 
     function renderNetworks(networks) {
-        const container = $('netList');
+        var container = document.getElementById('netList');
+        var count = document.getElementById('netCount');
         if (!container) return;
 
         if (!networks || networks.length === 0) {
-            container.innerHTML = '<div class="net-item"><span class="text-muted">No network data</span></div>';
+            container.innerHTML = '<div class="net-item" style="color:var(--text-muted);font-size:11px;">No network data</div>';
+            if (count) count.textContent = '0 interfaces';
             return;
         }
+
+        if (count) count.textContent = networks.length + ' interface' + (networks.length !== 1 ? 's' : '');
 
         container.innerHTML = networks.map(function (n) {
             return '<div class="net-item">' +
@@ -207,8 +361,8 @@
                 '<span class="net-name">' + escapeHtml(n.name) + '</span>' +
                 '</div>' +
                 '<div class="net-details">' +
-                '<span>⬆ Sent: ' + formatBytes(n.bytes_sent) + '</span>' +
-                '<span>⬇ Received: ' + formatBytes(n.bytes_recv) + '</span>' +
+                '<span>⬆ ' + formatBytes(n.bytes_sent) + '</span>' +
+                '<span>⬇ ' + formatBytes(n.bytes_recv) + '</span>' +
                 '</div>' +
                 '</div>';
         }).join('');
@@ -217,35 +371,35 @@
     function renderServices(services) {
         if (!services) return;
 
-        const knownServices = [];
-        const customServices = [];
+        var known = [];
+        var custom = [];
 
         services.forEach(function (s) {
-            if (s.is_custom) {
-                customServices.push(s);
-            } else {
-                knownServices.push(s);
-            }
+            if (s.is_custom) custom.push(s);
+            else known.push(s);
         });
 
-        renderKnownServices(knownServices);
-        renderCustomServices(customServices);
+        renderKnownServices(known);
+        renderCustomServices(custom);
     }
 
     function renderKnownServices(services) {
-        const tbody = $('servicesBody');
+        var tbody = document.getElementById('servicesBody');
+        var count = document.getElementById('svcCount');
         if (!tbody) return;
 
+        if (count) count.textContent = services.length + ' service' + (services.length !== 1 ? 's' : '');
+
         if (services.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" class="text-muted">No services detected</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="4" style="color:var(--text-muted);padding:20px;text-align:center;">No services detected</td></tr>';
             return;
         }
 
         tbody.innerHTML = services.map(function (s) {
-            const isUp = s.status === 'UP';
+            var isUp = s.status === 'UP';
             return '<tr>' +
-                '<td><strong>' + escapeHtml(s.name) + '</strong></td>' +
-                '<td>' + s.port + '</td>' +
+                '<td style="font-weight:600;color:var(--text-primary)">' + escapeHtml(s.name) + '</td>' +
+                '<td style="font-family:var(--font-mono);color:var(--accent)">' + (s.port || '-') + '</td>' +
                 '<td><span class="badge ' + (isUp ? 'badge-up' : 'badge-down') + '">' + s.status + '</span></td>' +
                 '<td>' + formatResponseTime(s.response_time) + '</td>' +
                 '</tr>';
@@ -253,20 +407,24 @@
     }
 
     function renderCustomServices(services) {
-        const tbody = $('customBody');
+        var tbody = document.getElementById('customBody');
+        var count = document.getElementById('customCount');
         if (!tbody) return;
 
+        if (count) count.textContent = services.length + ' endpoint' + (services.length !== 1 ? 's' : '');
+
         if (services.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-muted">No custom endpoints configured</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="4" style="color:var(--text-muted);padding:20px;text-align:center;">No custom endpoints configured</td></tr>';
             return;
         }
 
         tbody.innerHTML = services.map(function (s) {
-            const isUp = s.status === 'UP';
+            var isUp = s.status === 'UP';
+            var displayUrl = s.url || s.port || '-';
+            if (!s.url && s.port) displayUrl = 'localhost:' + s.port;
             return '<tr>' +
-                '<td><strong>' + escapeHtml(s.name) + '</strong></td>' +
-                '<td>' + escapeHtml(s.port ? ':' + s.port : '-') + '</td>' +
-                '<td>' + (s.is_custom ? 'Custom' : 'Auto') + '</td>' +
+                '<td style="font-weight:600;color:var(--text-primary)">' + escapeHtml(s.name) + '</td>' +
+                '<td style="font-family:var(--font-mono);color:var(--accent)">' + escapeHtml(displayUrl) + '</td>' +
                 '<td><span class="badge ' + (isUp ? 'badge-up' : 'badge-down') + '">' + s.status + '</span></td>' +
                 '<td>' + formatResponseTime(s.response_time) + '</td>' +
                 '</tr>';
@@ -277,56 +435,47 @@
     function checkAlerts(data) {
         if (!data || !data.metrics || !data.services) return;
 
-        // Check disk thresholds
         if (data.metrics.disks) {
             data.metrics.disks.forEach(function (d) {
                 if (d.percent > diskThreshold) {
-                    showAlert('Disk usage on ' + d.mount_point + ' is at ' + d.percent.toFixed(1) + '%', 'warning');
+                    showToast('DISK ALERT: ' + d.mount_point + ' at ' + d.percent.toFixed(1) + '%', 'warning');
                 }
             });
         }
 
-        // Check CPU threshold
         if (data.metrics.cpu && data.metrics.cpu.percent > cpuThreshold) {
-            showAlert('CPU usage is at ' + data.metrics.cpu.percent.toFixed(1) + '%', 'warning');
+            showToast('CPU ALERT: ' + data.metrics.cpu.percent.toFixed(1) + '%', 'warning');
         }
 
-        // Check down services
-        if (data.services) {
-            data.services.forEach(function (s) {
-                if (s.status === 'DOWN') {
-                    showAlert(s.name + ' on port ' + s.port + ' is DOWN', 'danger');
-                }
-            });
-        }
+        data.services.forEach(function (s) {
+            if (s.status === 'DOWN') {
+                showToast(s.name + ' on port ' + s.port + ' is DOWN', 'danger');
+            }
+        });
     }
 
-    var alertTimers = {};
+    function showToast(message, type) {
+        // Debounce per alert type to prevent notification floods
+        var now = Date.now();
+        if (lastAlertTimes[type] && (now - lastAlertTimes[type]) < 15000) return;
+        lastAlertTimes[type] = now;
 
-    function showAlert(message, type) {
-        // Debounce: don't show the same alert more than once per 30 seconds
         var key = message;
         if (alertTimers[key]) return;
         alertTimers[key] = true;
-        setTimeout(function () { delete alertTimers[key]; }, 30000);
+        setTimeout(function () { delete alertTimers[key]; }, 60000);
 
-        // Try browser notification API
         if ('Notification' in window && Notification.permission === 'granted') {
             new Notification('Velkron Pulse', { body: message });
         }
 
-        // Also show in-page toast
+        var container = document.getElementById('toastContainer');
+        if (!container) return;
+
         var toast = document.createElement('div');
         toast.className = 'toast toast-' + type;
         toast.textContent = message;
-        toast.style.cssText =
-            'position:fixed;bottom:60px;right:20px;padding:12px 20px;border-radius:8px;' +
-            'font-size:14px;z-index:1000;animation:slideIn 0.3s ease;' +
-            'background:' + (type === 'danger' ? 'var(--danger-bg)' : 'var(--warning-bg)') + ';' +
-            'color:' + (type === 'danger' ? 'var(--danger)' : 'var(--warning)') + ';' +
-            'border:1px solid ' + (type === 'danger' ? 'var(--danger)' : 'var(--warning)') + ';' +
-            'max-width:400px;box-shadow:0 4px 12px rgba(0,0,0,0.4);';
-        document.body.appendChild(toast);
+        container.appendChild(toast);
 
         setTimeout(function () {
             toast.style.opacity = '0';
@@ -337,23 +486,45 @@
 
     // --- Tab Navigation ---
     function initTabs() {
-        var tabs = document.querySelectorAll('.nav-tab');
+        var tabs = document.querySelectorAll('.nav-item');
+        var pageTitle = document.getElementById('pageTitle');
+        var breadcrumb = document.getElementById('breadcrumbCurrent');
+
+        var titles = {
+            overview: 'SYSTEM OVERVIEW',
+            services: 'SERVICE MONITOR',
+            settings: 'SYSTEM SETTINGS'
+        };
+
         tabs.forEach(function (tab) {
             tab.addEventListener('click', function () {
                 var target = this.getAttribute('data-tab');
 
-                // Update tab buttons
                 tabs.forEach(function (t) { t.classList.remove('active'); });
                 this.classList.add('active');
 
-                // Update tab content
                 document.querySelectorAll('.tab-content').forEach(function (tc) {
                     tc.classList.remove('active');
                 });
                 var targetTab = document.getElementById('tab-' + target);
                 if (targetTab) targetTab.classList.add('active');
+
+                if (pageTitle) pageTitle.textContent = titles[target] || 'SYSTEM OVERVIEW';
+                if (breadcrumb) breadcrumb.textContent = (target || 'OVERVIEW').toUpperCase();
             });
         });
+    }
+
+    // --- System Clock ---
+    function initClock() {
+        function update() {
+            var el = document.getElementById('sysTime');
+            if (!el) return;
+            var now = new Date();
+            el.textContent = now.toTimeString().split(' ')[0];
+        }
+        update();
+        setInterval(update, 1000);
     }
 
     // --- Settings ---
@@ -363,23 +534,23 @@
             .then(function (settings) {
                 if (settings.disk_threshold) {
                     diskThreshold = parseInt(settings.disk_threshold, 10);
-                    var el = $('diskThreshold');
+                    var el = document.getElementById('diskThreshold');
                     if (el) el.value = diskThreshold;
                     localStorage.setItem('diskThreshold', diskThreshold);
                 }
                 if (settings.cpu_threshold) {
                     cpuThreshold = parseInt(settings.cpu_threshold, 10);
-                    var el = $('cpuThreshold');
+                    var el = document.getElementById('cpuThreshold');
                     if (el) el.value = cpuThreshold;
                     localStorage.setItem('cpuThreshold', cpuThreshold);
                 }
             })
-            .catch(function () { /* use defaults */ });
+            .catch(function () {});
     }
 
     window.saveThresholds = function () {
-        var diskVal = $('diskThreshold') ? parseInt($('diskThreshold').value, 10) : 90;
-        var cpuVal = $('cpuThreshold') ? parseInt($('cpuThreshold').value, 10) : 90;
+        var diskVal = parseInt((document.getElementById('diskThreshold') || {}).value, 10) || 90;
+        var cpuVal = parseInt((document.getElementById('cpuThreshold') || {}).value, 10) || 90;
 
         diskThreshold = diskVal;
         cpuThreshold = cpuVal;
@@ -397,68 +568,67 @@
             body: JSON.stringify({ key: 'cpu_threshold', value: String(cpuThreshold) })
         }).catch(function () {});
 
-        showAlert('Thresholds saved', 'warning');
+        showToast('Thresholds saved', 'warning');
+    };
+
+    window.setEndpointType = function (type) {
+        endpointType = type;
+        document.querySelectorAll('.toggle-btn').forEach(function (btn) {
+            btn.classList.toggle('active', btn.getAttribute('data-type') === type);
+        });
     };
 
     window.addEndpoint = function () {
-        var name = $('epName') ? $('epName').value.trim() : '';
-        var url = $('epUrl') ? $('epUrl').value.trim() : '';
-        var type = $('epType') ? $('epType').value : 'http';
+        var name = (document.getElementById('epName') || {}).value || '';
+        var url = (document.getElementById('epUrl') || {}).value || '';
 
-        if (!name || !url) {
-            showAlert('Name and URL are required', 'danger');
+        if (!name.trim() || !url.trim()) {
+            showToast('Name and URL are required', 'danger');
             return;
         }
 
         fetch('/api/endpoints', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: name, url: url, type: type })
+            body: JSON.stringify({ name: name.trim(), url: url.trim(), type: endpointType })
         })
             .then(function (r) {
                 if (r.ok) {
-                    showAlert('Endpoint added', 'warning');
-                    if ($('epName')) $('epName').value = '';
-                    if ($('epUrl')) $('epUrl').value = '';
+                    showToast('Endpoint added', 'warning');
+                    var epName = document.getElementById('epName');
+                    var epUrl = document.getElementById('epUrl');
+                    if (epName) epName.value = '';
+                    if (epUrl) epUrl.value = '';
                 } else {
-                    showAlert('Failed to add endpoint', 'danger');
+                    showToast('Failed to add endpoint', 'danger');
                 }
             })
             .catch(function () {
-                showAlert('Failed to add endpoint', 'danger');
+                showToast('Failed to add endpoint', 'danger');
             });
     };
 
-    // --- Helpers ---
-    function escapeHtml(str) {
-        if (!str) return '';
-        var div = document.createElement('div');
-        div.appendChild(document.createTextNode(str));
-        return div.innerHTML;
-    }
-
     // --- Init ---
     function init() {
-        // Request notification permission
         if ('Notification' in window && Notification.permission === 'default') {
             Notification.requestPermission();
         }
 
+        initParticles();
         initTabs();
+        initClock();
         fetchInitial();
         connectWebSocket();
         loadSettings();
 
-        // Refresh custom endpoints list periodically
+        // Refresh custom endpoints list
         setInterval(function () {
             fetch('/api/endpoints')
                 .then(function (r) { return r.json(); })
                 .then(function (endpoints) {
-                    // Re-render services with updated custom endpoints
                     if (currentData && currentData.services) {
                         var known = currentData.services.filter(function (s) { return !s.is_custom; });
                         var custom = endpoints.map(function (ep) {
-                            // Find matching service status
                             var match = currentData.services.find(function (s) {
                                 return s.is_custom && s.endpoint_id === ep.id;
                             });
@@ -476,10 +646,9 @@
                     }
                 })
                 .catch(function () {});
-        }, 10000);
+        }, CONFIG.customRefreshInterval);
     }
 
-    // Run on DOM ready
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init);
     } else {

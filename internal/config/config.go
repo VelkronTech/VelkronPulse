@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 )
 
 // Config holds all runtime configuration for Velkron Pulse.
@@ -23,7 +24,8 @@ type Config struct {
 
 // Parse reads CLI flags and returns a populated Config.
 // It expands "~" in DBPath to the user's home directory and creates the
-// directory if it does not exist.
+// directory if it does not exist. On headless systems (no DISPLAY on Linux,
+// no TTY), it auto-disables browser opening unless --no-browser is explicitly set.
 func Parse() (*Config, error) {
 	cfg := &Config{}
 
@@ -32,6 +34,12 @@ func Parse() (*Config, error) {
 	flag.IntVar(&cfg.RefreshInterval, "refresh", 2, "Metrics collection interval in seconds")
 	flag.BoolVar(&cfg.NoBrowser, "no-browser", false, "Disable auto-opening browser")
 	flag.Parse()
+
+	// Auto-detect headless environment: skip browser if no graphical display.
+	// User can still force browser with --no-browser=false on headless systems.
+	if !cfg.NoBrowser && isHeadless() {
+		cfg.NoBrowser = true
+	}
 
 	// Expand ~ to home directory
 	if len(cfg.DBPath) > 0 && cfg.DBPath[0] == '~' {
@@ -48,6 +56,16 @@ func Parse() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// isHeadless returns true if the environment appears to have no graphical display.
+func isHeadless() bool {
+	if runtime.GOOS == "windows" {
+		// On Windows, check if running in a console session
+		return os.Getenv("SESSIONNAME") == "" && os.Getenv("TERM") == ""
+	}
+	// Linux/macOS: check DISPLAY environment variable
+	return os.Getenv("DISPLAY") == ""
 }
 
 // DBFilePath returns the full path to the SQLite database file.

@@ -1,16 +1,19 @@
 // Velkron Pulse — Lightweight infrastructure monitoring agent with embedded web dashboard.
 //
 // Usage:
-//   velkron-pulse [--port 2024] [--db-path ~/.velkron-pulse/] [--refresh 2] [--no-browser]
+//
+//	velkron-pulse [--port 2024] [--db-path ~/.velkron-pulse/] [--refresh 2] [--no-browser]
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"os"
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -82,7 +85,7 @@ func main() {
 	if !cfg.NoBrowser {
 		go func() {
 			time.Sleep(1 * time.Second)
-			openBrowser("http://localhost:" + itoa(cfg.Port))
+			openBrowser("http://localhost:" + strconv.Itoa(cfg.Port))
 		}()
 	}
 
@@ -98,8 +101,8 @@ func main() {
 			case <-saveTicker.C:
 				// Save metrics snapshot to DB
 				snapshot := collector.GetLatest()
-				diskJSON, _ := store.MarshalDisks(diskInfoToMap(snapshot.Disks))
-				netJSON, _ := store.MarshalNetworks(netInfoToMap(snapshot.Networks))
+				diskJSON, _ := store.MarshalToJSON(snapshot.Disks)
+				netJSON, _ := store.MarshalToJSON(snapshot.Networks)
 				if err := dataStore.SaveMetrics(
 					snapshot.CPU.Percent,
 					snapshot.Memory.Total,
@@ -136,50 +139,34 @@ func main() {
 		}
 	}()
 
-	// 9. Graceful shutdown
+	// 9. Setup signal handling (must happen before server blocks)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	// 10. Start server in background so we can handle signals
 	go func() {
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-		sig := <-sigCh
-		log.Printf("Received signal %v, shutting down...", sig)
-		collector.Stop()
-		scanner.Stop()
-		dataStore.Close()
-		os.Exit(0)
+		if err := server.Start(); err != nil {
+			log.Fatalf("Server error: %v", err)
+		}
 	}()
 
-	// 10. Start server (blocks)
-	if err := server.Start(); err != nil {
-		log.Fatalf("Server error: %v", err)
-	}
-}
+	// 11. Wait for shutdown signal
+	sig := <-sigCh
+	log.Printf("Received signal %v, shutting down gracefully...", sig)
+	signal.Stop(sigCh)
 
-// diskInfoToMap converts []metrics.DiskInfo to []map[string]interface{} for JSON serialization.
-func diskInfoToMap(disks []metrics.DiskInfo) []map[string]interface{} {
-	result := make([]map[string]interface{}, len(disks))
-	for i, d := range disks {
-		result[i] = map[string]interface{}{
-			"mount_point": d.MountPoint,
-			"total":       d.Total,
-			"used":        d.Used,
-			"free":        d.Free,
-			"percent":     d.Percent,
-		}
+	// Graceful HTTP shutdown with 10s timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("HTTP shutdown error: %v", err)
 	}
-	return result
-}
 
-// netInfoToMap converts []metrics.NetworkInfo to []map[string]interface{} for JSON serialization.
-func netInfoToMap(networks []metrics.NetworkInfo) []map[string]interface{} {
-	result := make([]map[string]interface{}, len(networks))
-	for i, n := range networks {
-		result[i] = map[string]interface{}{
-			"name":       n.Name,
-			"bytes_sent": n.BytesSent,
-			"bytes_recv": n.BytesRecv,
-		}
-	}
-	return result
+	// Stop background components
+	collector.Stop()
+	scanner.Stop()
+	dataStore.Close()
+	log.Println("Velkron Pulse stopped.")
 }
 
 // openBrowser opens the default browser to the given URL.
@@ -204,17 +191,4 @@ func openBrowser(url string) {
 	} else {
 		log.Printf("Browser opened to %s", url)
 	}
-}
-
-// itoa is a simple int to string conversion (avoids importing strconv in main).
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	s := ""
-	for n > 0 {
-		s = string(rune('0'+n%10)) + s
-		n /= 10
-	}
-	return s
 }
